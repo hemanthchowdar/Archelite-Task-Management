@@ -1,0 +1,219 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────
+
+enum AccessRole {
+  super_admin
+  admin
+  member
+}
+
+enum Language {
+  en
+  hi
+  te
+}
+
+enum EmployeeStatus {
+  active
+  inactive
+}
+
+enum TaskPriority {
+  low
+  medium
+  high
+  critical
+  urgent
+}
+
+enum TaskStatus {
+  todo
+  in_progress
+  needs_action
+  needs_verification
+  closed
+}
+
+enum AssignmentRole {
+  owner
+  collaborator
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+enum CommentType {
+  text
+  voice
+}
+
+// ─── Models ──────────────────────────────────────────
+
+model Employee {
+  id                String         @id @default(uuid())
+  name              String
+  email             String?        @unique
+  phone             String         @unique
+  employeeId        String?        @unique
+  photoUrl          String?
+  accessRole        AccessRole     @default(member)
+  orgLevel          Int            @default(1)
+  address           String?
+  dateOfBirth       DateTime?
+  bloodGroup        String?
+  preferredLanguage Language       @default(en)
+  status            EmployeeStatus @default(active)
+  pushToken         String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  // relations
+  createdTasks      Task[]              @relation("TaskCreator")
+  assignments       TaskAssignment[]
+  comments          Comment[]
+  requestedApprovals ApprovalRequest[] @relation("ApprovalRequester")
+  approvals         ApprovalRequest[]  @relation("Approver")
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  uploadedAttachments Attachment[]
+}
+
+model Category {
+  id           String  @id @default(uuid())
+  key          String  @unique
+  labelEn      String
+  labelHi      String
+  labelTe      String
+  tasks        Task[]
+}
+
+model Project {
+  id        String   @id @default(uuid())
+  name      String
+  location  String?
+  createdAt DateTime @default(now())
+  tasks     Task[]
+}
+
+model Task {
+  id             String       @id @default(uuid())
+  title          String
+  description    String?
+  priority       TaskPriority @default(medium)
+  status         TaskStatus   @default(todo)
+  dueDate        DateTime?
+  categoryId     String?
+  projectId      String?
+  createdById    String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  lastActivityAt DateTime     @default(now())
+
+  // relations
+  createdBy      Employee         @relation("TaskCreator", fields: [createdById], references: [id])
+  category       Category?        @relation(fields: [categoryId], references: [id])
+  project        Project?         @relation(fields: [projectId], references: [id])
+  assignments    TaskAssignment[]
+  comments       Comment[]
+  attachments    Attachment[]
+  approvals      ApprovalRequest[]
+  auditLogs      AuditLog[]
+  notifications  Notification[]
+}
+
+model TaskAssignment {
+  id          String         @id @default(uuid())
+  taskId      String
+  employeeId  String
+  role        AssignmentRole @default(collaborator)
+  assignedById String
+  assignedAt  DateTime       @default(now())
+
+  task        Task     @relation(fields: [taskId], references: [id])
+  employee    Employee @relation(fields: [employeeId], references: [id])
+
+  @@unique([taskId, employeeId])
+}
+
+model Comment {
+  id          String      @id @default(uuid())
+  taskId      String
+  authorId    String
+  body        String
+  type        CommentType @default(text)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  isEdited    Boolean     @default(false)
+
+  task        Task         @relation(fields: [taskId], references: [id])
+  author      Employee     @relation(fields: [authorId], references: [id])
+  attachments Attachment[]
+}
+
+model Attachment {
+  id          String   @id @default(uuid())
+  taskId      String?
+  commentId   String?
+  uploaderId  String
+  fileUrl     String
+  fileType    String
+  fileName    String
+  sizeBytes   Int
+  createdAt   DateTime @default(now())
+
+  task        Task?    @relation(fields: [taskId], references: [id])
+  comment     Comment? @relation(fields: [commentId], references: [id])
+  uploader    Employee @relation(fields: [uploaderId], references: [id])
+}
+
+model ApprovalRequest {
+  id              String         @id @default(uuid())
+  taskId          String
+  requestedById   String
+  approverId      String
+  status          ApprovalStatus @default(pending)
+  decisionComment String?
+  createdAt       DateTime       @default(now())
+  decidedAt       DateTime?
+
+  task            Task     @relation(fields: [taskId], references: [id])
+  requestedBy     Employee @relation("ApprovalRequester", fields: [requestedById], references: [id])
+  approver        Employee @relation("Approver", fields: [approverId], references: [id])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  taskId     String
+  actorId    String
+  action     String
+  fromValue  String?
+  toValue    String?
+  createdAt  DateTime @default(now())
+
+  task       Task     @relation(fields: [taskId], references: [id])
+  actor      Employee @relation(fields: [actorId], references: [id])
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  employeeId String
+  type       String
+  taskId     String?
+  message    String
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  task       Task?    @relation(fields: [taskId], references: [id])
+}
