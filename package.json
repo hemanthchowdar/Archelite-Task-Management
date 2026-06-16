@@ -1,20 +1,10 @@
 {
-  "name": "construction-task-manager",
+  "name": "ctms",
   "private": true,
-  "version": "0.1.0",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "scripts": {
-    "build": "turbo run build",
-    "dev": "turbo run dev",
-    "lint": "turbo run lint",
-    "format": "prettier --write \"**/*.{ts,tsx,md,json}\""
+    "dev:api": "pnpm --filter @ctms/api dev",
+    "dev:admin": "pnpm --filter @ctms/admin dev",
+    "dev:mobile": "pnpm --filter @ctms/mobile dev"
   },
-  "devDependencies": {
-    "prettier": "^3.0.0",
-    "tsx": "^4.22.4",
-    "turbo": "^1.10.0"
-  }
+  "packageManager": "pnpm@9.0.0"
 }

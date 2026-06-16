@@ -48,7 +48,7 @@ gantt
 
 | Ticket ID | Title | Priority | Category | Estimate |
 | :--- | :--- | :---: | :--- | :---: |
-| **CTMS-001** | Monorepo scaffold with Turborepo | 🔴 Critical | Setup | 3h |
+| **CTMS-001** | Monorepo scaffold (plain pnpm workspaces) | 🔴 Critical | Setup | 3h |
 | **CTMS-002** | Postgres + Prisma schema setup | 🔴 Critical | Database | 4h |
 | **CTMS-003** | Fastify API skeleton + env config | 🟠 High | Infra | 2h |
 | **CTMS-004** | Expo app init + navigation scaffold | 🟠 High | Mobile | 3h |
@@ -76,23 +76,23 @@ gantt
 > [!NOTE]
 > Focuses on laying the core foundation that all subsequent modules build on.
 
-### 🎫 CTMS-001: Monorepo scaffold with Turborepo
+### 🎫 CTMS-001: Monorepo scaffold (plain pnpm workspaces)
 - **Category:** Setup
 - **Priority:** 🔴 Critical
 - **Estimate:** 3h
-- **Tech Stack:** `Turborepo`, `TypeScript`, `ESLint`, `Prettier`
+- **Tech Stack:** `pnpm Workspaces`, `TypeScript`
 
 #### **Description**
-Bootstrap a Turborepo monorepo with three packages: `apps/mobile` (Expo), `apps/admin` (Next.js), `apps/api` (Fastify). Set up shared `packages/types` and `packages/db` (Prisma). Configure TypeScript, ESLint, Prettier across all packages with shared configs.
+Bootstrap a pnpm workspaces monorepo with three packages: `apps/mobile` (Expo), `apps/admin` (Next.js), `apps/api` (Fastify). Set up shared `packages/types` and `packages/db`. Configure TypeScript base configuration across all packages.
 
 #### **How to Implement**
-`npx create-turbo@latest` &rarr; restructure into apps/packages layout &rarr; configure `turbo.json` pipeline (build, dev, lint tasks) &rarr; shared `tsconfig.base.json` extended per app.
+Initialize workspace at repository root and create `apps/api/src`, `apps/admin`, `apps/mobile`, `packages/types/src`, `packages/db/src` &rarr; create root `package.json`, `pnpm-workspace.yaml`, and `tsconfig.base.json` &rarr; set up `packages/types`, `packages/db`, and `apps/api` dependencies &rarr; implement shared type definitions and Fastify health check route.
 
 #### **Acceptance Criteria**
-- [ ] `turbo dev` starts all three apps simultaneously.
+- [ ] `pnpm install` links all packages together without errors.
 - [ ] TypeScript compiles with zero errors across all packages.
-- [ ] Shared type from `packages/types` is importable in both mobile and API.
-- [ ] ESLint passes on all packages.
+- [ ] Shared type from `@ctms/types` resolves correctly in Fastify API.
+- [ ] `GET http://localhost:3001/health` returns status "ok" and imports test value successfully.
 
 ---
 
