@@ -127,3 +127,9 @@ git commit -m "feat: your feature description"
 git push origin main
 ```
 
+---
+
+## 📅 Sprint Plan
+
+For a detailed breakdown of the 5-day implementation plan, check out:
+👉 **[5-Day Sprint Plan](sprint_plan_5_days.md)** (contains 19 Jira-style tickets with implementation details and acceptance criteria).
