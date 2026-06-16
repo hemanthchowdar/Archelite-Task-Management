@@ -1,0 +1,10 @@
+{
+  "name": "@workspace/ts-config",
+  "version": "0.1.0",
+  "private": true,
+  "main": "",
+  "types": "",
+  "scripts": {
+    "build": "echo 'tsconfig ready'"
+  }
+}
