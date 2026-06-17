@@ -1,28 +1,54 @@
 import Fastify from 'fastify'
-import type { Employee } from '@ctms/types'
+import { config } from './config'
 
-const app = Fastify({ logger: true })
+// plugins
+import prismaPlugin from './plugins/prisma'
+import corsPlugin from './plugins/cors'
 
-app.get('/health', async () => {
-  const testEmployee: Pick<Employee, 'id' | 'name' | 'role'> = {
-    id: '123',
-    name: 'Test User',
-    role: 'admin'
-  }
-  return { 
-    status: 'ok',
-    testImport: testEmployee.role
-  }
+// domain routes
+import authRoutes from './routes/auth'
+import taskRoutes from './routes/tasks'
+import userRoutes from './routes/users'
+import notificationRoutes from './routes/notifications'
+
+// ── Build server ────────────────────────────────────────
+const server = Fastify({
+  logger: {
+    level: config.NODE_ENV === 'production' ? 'info' : 'debug',
+    ...(config.NODE_ENV !== 'production' && {
+      transport: { target: 'pino-pretty' },
+    }),
+  },
 })
 
-const start = async () => {
-  try {
-    await app.listen({ port: 3001 })
-    console.log('API running at http://localhost:3001')
-  } catch (err) {
-    app.log.error(err)
-    process.exit(1)
-  }
+async function main() {
+  // ── Plugins (order matters) ─────────────────────────
+  await server.register(corsPlugin)
+  await server.register(prismaPlugin)
+
+  // ── Health check ────────────────────────────────────
+  server.get('/health', async (request) => {
+    await request.server.prisma.$queryRaw`SELECT 1`
+    return {
+      status: 'ok',
+      db: 'connected',
+      environment: config.NODE_ENV,
+      uptime: Math.round(process.uptime()),
+    }
+  })
+
+  // ── Domain routes ───────────────────────────────────
+  await server.register(authRoutes, { prefix: '/auth' })
+  await server.register(taskRoutes, { prefix: '/tasks' })
+  await server.register(userRoutes, { prefix: '/users' })
+  await server.register(notificationRoutes, { prefix: '/notifications' })
+
+  // ── Start listening ─────────────────────────────────
+  await server.listen({ port: config.PORT, host: '0.0.0.0' })
+  console.log(`\n🚀  CTMS API ready at http://localhost:${config.PORT}\n`)
 }
 
-start()
+main().catch((err) => {
+  server.log.error(err)
+  process.exit(1)
+})
