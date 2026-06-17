@@ -26,6 +26,23 @@ async function main() {
   await server.register(corsPlugin)
   await server.register(prismaPlugin)
 
+  // ── Root route (Welcome & API Info) ─────────────────
+  server.get('/', async () => {
+    return {
+      name: 'CTMS API (Construction Task Management System)',
+      status: 'running',
+      version: '1.0.0',
+      environment: config.NODE_ENV,
+      endpoints: {
+        health: '/health',
+        auth: '/auth/test',
+        tasks: '/tasks/test',
+        users: '/users/test',
+        notifications: '/notifications/test',
+      },
+    }
+  })
+
   // ── Health check ────────────────────────────────────
   server.get('/health', async (request) => {
     await request.server.prisma.$queryRaw`SELECT 1`
