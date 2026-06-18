@@ -7,11 +7,11 @@ import { z } from 'zod'
  */
 const envSchema = z.object({
   DATABASE_URL: z
-    .string({ required_error: 'DATABASE_URL is required' })
-    .min(1, 'DATABASE_URL must not be empty'),
+    .string()
+    .min(1, 'DATABASE_URL is required'),
 
   JWT_SECRET: z
-    .string({ required_error: 'JWT_SECRET is required' })
+    .string()
     .min(32, 'JWT_SECRET must be at least 32 characters'),
 
   PORT: z
@@ -25,6 +25,16 @@ const envSchema = z.object({
     .default('development'),
 
   CORS_ORIGIN: z.string().default('*'),
+
+  // SMS Gateway (MSG91) - Optional, fallback to console logging
+  MSG91_API_KEY: z.string().optional(),
+  MSG91_SENDER_ID: z.string().default('NIRMAN'),
+  MSG91_TEMPLATE_ID: z.string().optional(),
+
+  // Redis / Upstash config - Optional, fallback to in-memory store
+  REDIS_URL: z.string().optional(),
+  UPSTASH_REDIS_REST_URL: z.string().optional(),
+  UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
 })
 
 export type Env = z.infer<typeof envSchema>

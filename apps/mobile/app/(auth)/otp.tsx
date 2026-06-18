@@ -7,11 +7,14 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
+import * as SecureStore from 'expo-secure-store';
 import { useAppStore } from '@/store/useAppStore';
 import { Colors, Fonts, Spacing, Radius } from '@/constants/theme';
+import { apiFetch } from '@/api/queryClient';
 
 const OTP_LENGTH = 6;
 
@@ -23,6 +26,8 @@ export default function OtpScreen() {
 
   const [otp, setOtp] = useState<string[]>(Array(OTP_LENGTH).fill(''));
   const [countdown, setCountdown] = useState(30);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRefs = useRef<(TextInput | null)[]>([]);
 
   // Auto‑focus first input
@@ -63,16 +68,67 @@ export default function OtpScreen() {
     }
   };
 
-  const handleVerify = (_code: string) => {
-    // Mock login — in real app this calls POST /auth/verify-otp
-    login('mock-jwt-token', {
-      id: '1',
-      name: 'Archelite User',
-      phone: phone ?? '',
-      role: 'ADMIN',
-      orgLevel: 5,
-    });
-    router.replace('/(app)/(tabs)/tasks');
+  const handleVerify = async (code: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch<{
+        accessToken: string;
+        refreshToken: string;
+        employee: {
+          id: string;
+          name: string;
+          phone: string;
+          accessRole: 'SUPER_ADMIN' | 'ADMIN' | 'MEMBER';
+          orgLevel: number;
+          preferredLanguage: 'en' | 'hi' | 'te' | null;
+        };
+      }>('/auth/verify-otp', {
+        method: 'POST',
+        body: JSON.stringify({ phone, otp: code }),
+      });
+
+      // Save tokens in SecureStore
+      await SecureStore.setItemAsync('accessToken', res.accessToken);
+      await SecureStore.setItemAsync('refreshToken', res.refreshToken);
+
+      // Log in to global zustand app store mapping accessRole -> role
+      login(res.accessToken, {
+        id: res.employee.id,
+        name: res.employee.name,
+        phone: res.employee.phone,
+        role: res.employee.accessRole,
+        orgLevel: res.employee.orgLevel,
+      });
+
+      // Navigate appropriately
+      if (!res.employee.preferredLanguage) {
+        // Un-onboarded user: send to language selection screen
+        router.replace('/(app)/(tabs)/profile');
+      } else {
+        router.replace('/(app)/(tabs)/tasks');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Verification failed. Please check the code.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (!phone) return;
+    setError(null);
+    try {
+      await apiFetch('/auth/request-otp', {
+        method: 'POST',
+        body: JSON.stringify({ phone }),
+      });
+      setCountdown(30);
+      setOtp(Array(OTP_LENGTH).fill(''));
+      inputRefs.current[0]?.focus();
+    } catch (err: any) {
+      setError(err.message || 'Failed to resend OTP. Please try again.');
+    }
   };
 
   return (
@@ -82,7 +138,7 @@ export default function OtpScreen() {
     >
       <View style={styles.inner}>
         {/* Back arrow area */}
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => router.back()} disabled={loading}>
           <Text style={styles.backArrow}>←</Text>
         </TouchableOpacity>
 
@@ -104,6 +160,7 @@ export default function OtpScreen() {
               keyboardType="number-pad"
               maxLength={1}
               selectTextOnFocus
+              editable={!loading}
             />
           ))}
         </View>
@@ -115,23 +172,29 @@ export default function OtpScreen() {
               {t('auth.resendIn', { seconds: countdown })}
             </Text>
           ) : (
-            <TouchableOpacity onPress={() => setCountdown(30)}>
+            <TouchableOpacity onPress={handleResend} disabled={loading}>
               <Text style={styles.resendLink}>{t('auth.resendOtp')}</Text>
             </TouchableOpacity>
           )}
         </View>
 
+        {error && <Text style={styles.errorText}>{error}</Text>}
+
         {/* Verify Button */}
         <TouchableOpacity
           style={[
             styles.button,
-            otp.join('').length < OTP_LENGTH && styles.buttonDisabled,
+            (otp.join('').length < OTP_LENGTH || loading) && styles.buttonDisabled,
           ]}
           onPress={() => handleVerify(otp.join(''))}
-          disabled={otp.join('').length < OTP_LENGTH}
+          disabled={otp.join('').length < OTP_LENGTH || loading}
           activeOpacity={0.8}
         >
-          <Text style={styles.buttonText}>{t('auth.verifyOtp')}</Text>
+          {loading ? (
+            <ActivityIndicator color={Colors.textOnPrimary} size="small" />
+          ) : (
+            <Text style={styles.buttonText}>{t('auth.verifyOtp')}</Text>
+          )}
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
@@ -215,5 +278,12 @@ const styles = StyleSheet.create({
     fontSize: Fonts.sizes.lg,
     fontWeight: '700',
     color: Colors.textOnPrimary,
+  },
+  errorText: {
+    color: Colors.error,
+    fontSize: Fonts.sizes.md,
+    marginBottom: Spacing.md,
+    textAlign: 'center',
+    fontWeight: '500',
   },
 });
