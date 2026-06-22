@@ -4,11 +4,13 @@ import { config } from './config'
 // plugins
 import prismaPlugin from './plugins/prisma'
 import corsPlugin from './plugins/cors'
+import authPlugin from './plugins/auth'
 
 // domain routes
 import authRoutes from './routes/auth'
 import taskRoutes from './routes/tasks'
 import userRoutes from './routes/users'
+import employeeRoutes from './routes/employees'
 import notificationRoutes from './routes/notifications'
 
 // ── Build server ────────────────────────────────────────
@@ -25,6 +27,7 @@ async function main() {
   // ── Plugins (order matters) ─────────────────────────
   await server.register(corsPlugin)
   await server.register(prismaPlugin)
+  await server.register(authPlugin)
 
   // ── Root route (Welcome & API Info) ─────────────────
   server.get('/', async () => {
@@ -38,6 +41,7 @@ async function main() {
         auth: '/auth/test',
         tasks: '/tasks/test',
         users: '/users/test',
+        employees: '/employees',
         notifications: '/notifications/test',
       },
     }
@@ -58,6 +62,7 @@ async function main() {
   await server.register(authRoutes, { prefix: '/auth' })
   await server.register(taskRoutes, { prefix: '/tasks' })
   await server.register(userRoutes, { prefix: '/users' })
+  await server.register(employeeRoutes, { prefix: '/employees' })
   await server.register(notificationRoutes, { prefix: '/notifications' })
 
   // ── Start listening ─────────────────────────────────

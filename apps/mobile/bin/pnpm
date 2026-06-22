@@ -1,0 +1,3 @@
+#!/bin/bash
+# Forward arguments to the correct npx/pnpm command using our local npm-cache
+npx --cache /Users/yaswanthkata/Archelite-task-management/task-management-app-archelite/npm-cache pnpm@9.0.0 "$@"
