@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { TaskStatus, TaskPriority, AssignmentRole } from '@ctms/db';
+import { TaskStatus, TaskPriority, AssignmentRole, ApprovalStatus } from '@ctms/db';
 
 // Enforced state transition matrix
 const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
@@ -479,6 +479,189 @@ const taskRoutes: FastifyPluginAsync = async (server) => {
 
     return { success: true, message: 'Assignee removed successfully' };
   });
+
+  // ─── GET /tasks/categories (List all task categories) ─────────────
+  server.get('/categories', async (_request, reply) => {
+    const categories = await server.prisma.category.findMany({
+      orderBy: { key: 'asc' },
+    });
+    return categories;
+  });
+
+  // ─── POST /tasks/:id/approvals (Request Approval) ─────────────────
+  server.post('/:id/approvals', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const actorId = request.user!.id;
+
+    const task = await server.prisma.task.findUnique({
+      where: { id },
+      include: { assignments: true },
+    });
+
+    if (!task) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Task not found' });
+    }
+
+    const bodySchema = z.object({
+      approverId: z.string().min(1, 'Approver ID is required'),
+    });
+
+    const parsed = bodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: 'Bad Request',
+        message: parsed.error.issues[0].message,
+      });
+    }
+
+    const { approverId } = parsed.data;
+
+    // Verify approver exists
+    const approver = await server.prisma.employee.findUnique({ where: { id: approverId } });
+    if (!approver) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'Approver employee not found' });
+    }
+
+    const approval = await server.prisma.$transaction(async (tx) => {
+      // Create the approval request
+      const newApproval = await tx.approvalRequest.create({
+        data: {
+          taskId: id,
+          requestedById: actorId,
+          approverId,
+          status: ApprovalStatus.pending,
+        },
+        include: { requestedBy: true, approver: true },
+      });
+
+      // Update task status to needs_verification
+      await tx.task.update({
+        where: { id },
+        data: { status: TaskStatus.needs_verification, lastActivityAt: new Date() },
+      });
+
+      // Audit log
+      await tx.auditLog.create({
+        data: {
+          taskId: id,
+          actorId,
+          action: 'approval_requested',
+          toValue: `Approval requested from ${approver.name}`,
+        },
+      });
+
+      // Notify the designated approver
+      await tx.notification.create({
+        data: {
+          employeeId: approverId,
+          type: 'approval_requested',
+          taskId: id,
+          message: `Approval requested for task: "${task.title}"`,
+        },
+      });
+
+      return newApproval;
+    });
+
+    return reply.status(201).send(approval);
+  });
+
+  // ─── PATCH /tasks/:id/approvals/:approvalId (Decide: Approve / Reject) ─
+  server.patch('/:id/approvals/:approvalId', async (request, reply) => {
+    const { id, approvalId } = request.params as { id: string; approvalId: string };
+    const actor = request.user!;
+
+    const existingApproval = await server.prisma.approvalRequest.findUnique({
+      where: { id: approvalId },
+      include: { task: { include: { assignments: true } } },
+    });
+
+    if (!existingApproval || existingApproval.taskId !== id) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Approval request not found' });
+    }
+
+    // Only the designated approver or admins may decide
+    if (actor.accessRole === 'member' && existingApproval.approverId !== actor.id) {
+      return reply.status(403).send({
+        error: 'Forbidden',
+        message: 'Only the designated approver can act on this request',
+      });
+    }
+
+    if (existingApproval.status !== ApprovalStatus.pending) {
+      return reply.status(400).send({
+        error: 'Bad Request',
+        message: 'This approval request has already been decided',
+      });
+    }
+
+    const bodySchema = z.object({
+      status: z.enum(['approved', 'rejected']),
+      decisionComment: z.string().min(1, 'A decision comment is required'),
+    });
+
+    const parsed = bodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: 'Bad Request',
+        message: parsed.error.issues[0].message,
+      });
+    }
+
+    const { status, decisionComment } = parsed.data;
+
+    // Determine task status transition based on decision
+    const nextTaskStatus =
+      status === 'approved' ? TaskStatus.closed : TaskStatus.in_progress;
+
+    const decidedApproval = await server.prisma.$transaction(async (tx) => {
+      // 1. Update the approval record
+      const updated = await tx.approvalRequest.update({
+        where: { id: approvalId },
+        data: {
+          status: status as ApprovalStatus,
+          decisionComment,
+          decidedAt: new Date(),
+        },
+        include: { requestedBy: true, approver: true },
+      });
+
+      // 2. Transition the task status
+      await tx.task.update({
+        where: { id },
+        data: { status: nextTaskStatus, lastActivityAt: new Date() },
+      });
+
+      // 3. Write audit log
+      await tx.auditLog.create({
+        data: {
+          taskId: id,
+          actorId: actor.id,
+          action: `approval_${status}`,
+          fromValue: ApprovalStatus.pending,
+          toValue: `${status}: ${decisionComment}`,
+        },
+      });
+
+      // 4. Notify all task assignees
+      const assigneeIds = existingApproval.task.assignments.map((a) => a.employeeId);
+      if (assigneeIds.length > 0) {
+        await tx.notification.createMany({
+          data: assigneeIds.map((employeeId) => ({
+            employeeId,
+            type: `approval_${status}`,
+            taskId: id,
+            message: `Task "${existingApproval.task.title}" was ${status}: "${decisionComment}"`,
+          })),
+        });
+      }
+
+      return updated;
+    });
+
+    return decidedApproval;
+  });
 };
 
 export default taskRoutes;
+
