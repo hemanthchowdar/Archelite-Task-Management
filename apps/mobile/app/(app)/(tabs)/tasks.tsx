@@ -1,73 +1,58 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
-  ScrollView,
   TouchableOpacity,
   StyleSheet,
   SafeAreaView,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
+import { useQuery } from '@tanstack/react-query';
+import { FlashList } from '@shopify/flash-list';
 import { Colors, Fonts, Spacing, Radius, avatarColor } from '@/constants/theme';
+import { apiFetch } from '@/api/queryClient';
+import { useAppStore } from '@/store/useAppStore';
 
-// ── Mock Data ─────────────────────────────────────────
-const MOCK_TASKS = [
-  {
-    id: '1',
-    title: 'Submit GST filing documents',
-    lastMessage: 'Anil: Will upload by today',
-    category: 'Bookkeeping',
-    time: '8:02 AM',
-    avatar: 'G',
-    unread: 1,
-    priority: 'high' as const,
-    closed: false,
-  },
-  {
-    id: '2',
-    title: 'Foundation photos – Towe…',
-    lastMessage: '3 photos added',
-    category: 'Construction',
-    time: 'Yesterday',
-    avatar: 'T',
-    unread: 0,
-    priority: 'medium' as const,
-    closed: false,
-  },
-  {
-    id: '3',
-    title: 'Reconcile petty cash –…',
-    lastMessage: 'Closed by Lakshmi',
-    category: 'Bookkeeping',
-    time: 'Yesterday',
-    avatar: 'P',
-    unread: 0,
-    priority: 'low' as const,
-    closed: true,
-  },
-  {
-    id: '4',
-    title: 'Cement Vendor Approval',
-    lastMessage: 'Ramesh: Please process urgently',
-    category: 'Invoice',
-    time: '2 days ago',
-    avatar: 'R',
-    unread: 0,
-    priority: 'urgent' as const,
-    closed: false,
-    hasAttachment: true,
-  },
-];
+// ── Types ─────────────────────────────────────────────
+interface TaskAssignment {
+  employeeId: string;
+  role: string;
+  employee: {
+    id: string;
+    name: string;
+  };
+}
 
+interface Category {
+  id: string;
+  key: string;
+  labelEn: string;
+}
+
+interface Task {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  dueDate: string | null;
+  createdAt: string;
+  lastActivityAt: string;
+  category: Category | null;
+  assignments: TaskAssignment[];
+  _count?: { comments: number };
+}
+
+// ── Constants ──────────────────────────────────────────
 type FilterKey = 'all' | 'myTasks' | 'overdue';
 
 const CATEGORY_STYLES: Record<string, { bg: string; text: string }> = {
-  Bookkeeping: { bg: Colors.bookkeeping, text: Colors.bookkeepingText },
-  Construction: { bg: Colors.construction, text: Colors.constructionText },
-  Accounting: { bg: Colors.accounting, text: Colors.accountingText },
-  Invoice: { bg: Colors.invoice, text: Colors.invoiceText },
+  bookkeeping: { bg: Colors.bookkeeping, text: Colors.bookkeepingText },
+  construction: { bg: Colors.construction, text: Colors.constructionText },
+  accounting: { bg: Colors.accounting, text: Colors.accountingText },
+  invoice: { bg: Colors.invoice, text: Colors.invoiceText },
 };
 
 const PRIORITY_DOT: Record<string, string> = {
@@ -78,16 +63,160 @@ const PRIORITY_DOT: Record<string, string> = {
   low: Colors.low,
 };
 
+const STATUS_LABEL: Record<string, string> = {
+  todo: 'To Do',
+  in_progress: 'In Progress',
+  needs_action: 'Needs Action',
+  needs_verification: 'Needs Verification',
+  closed: 'Closed',
+};
+
+// ── TaskCard Component ─────────────────────────────────
+function TaskCard({ task, onPress }: { task: Task; onPress: () => void }) {
+  const isClosed = task.status === 'closed';
+  const firstAssignee = task.assignments[0]?.employee?.name ?? '?';
+  const categoryKey = task.category?.key ?? '';
+
+  return (
+    <TouchableOpacity
+      style={styles.card}
+      activeOpacity={0.7}
+      onPress={onPress}
+    >
+      {/* Avatar */}
+      <View
+        style={[
+          styles.avatar,
+          { backgroundColor: avatarColor(firstAssignee) },
+        ]}
+      >
+        <Text style={styles.avatarText}>{firstAssignee.charAt(0).toUpperCase()}</Text>
+      </View>
+
+      {/* Content */}
+      <View style={styles.cardContent}>
+        <View style={styles.cardTopRow}>
+          <Text
+            style={[styles.taskTitle, isClosed && styles.taskTitleClosed]}
+            numberOfLines={1}
+          >
+            {task.title}
+          </Text>
+          <Text style={styles.taskTime}>
+            {task.dueDate
+              ? new Date(task.dueDate).toLocaleDateString('en-IN', {
+                  day: 'numeric',
+                  month: 'short',
+                })
+              : STATUS_LABEL[task.status] ?? task.status}
+          </Text>
+        </View>
+
+        <View style={styles.cardBottomRow}>
+          <View style={styles.messageRow}>
+            <View
+              style={[
+                styles.priorityDot,
+                { backgroundColor: PRIORITY_DOT[task.priority] ?? Colors.medium },
+              ]}
+            />
+            <Text
+              style={[styles.lastMessage, isClosed && styles.lastMessageClosed]}
+              numberOfLines={1}
+            >
+              {task.assignments.length} assignee
+              {task.assignments.length !== 1 ? 's' : ''} · {task.priority}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.cardMeta}>
+          {/* Category Badge */}
+          {task.category && (
+            <View
+              style={[
+                styles.categoryBadge,
+                {
+                  backgroundColor:
+                    CATEGORY_STYLES[categoryKey]?.bg ?? Colors.surfaceMuted,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.categoryText,
+                  {
+                    color:
+                      CATEGORY_STYLES[categoryKey]?.text ?? Colors.textSecondary,
+                  },
+                ]}
+              >
+                {task.category.labelEn}
+              </Text>
+            </View>
+          )}
+
+          {/* Status chip */}
+          <View style={styles.statusChip}>
+            <Text style={styles.statusChipText}>
+              {STATUS_LABEL[task.status] ?? task.status}
+            </Text>
+          </View>
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// ── Main Screen ────────────────────────────────────────
 export default function TasksScreen() {
   const { t } = useTranslation();
   const router = useRouter();
+  const employee = useAppStore((s) => s.employee);
   const [activeFilter, setActiveFilter] = useState<FilterKey>('all');
+
+  // ── Fetch tasks from live API ──────────────────────
+  const {
+    data: tasks,
+    isLoading,
+    isError,
+    refetch,
+    isFetching,
+  } = useQuery<Task[]>({
+    queryKey: ['tasks'],
+    queryFn: () => apiFetch<Task[]>('/tasks'),
+  });
+
+  // ── Client-side filter logic ───────────────────────
+  const filteredTasks = useCallback(() => {
+    if (!tasks) return [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    switch (activeFilter) {
+      case 'myTasks':
+        return tasks.filter((t) =>
+          t.assignments.some((a) => a.employeeId === employee?.id)
+        );
+      case 'overdue':
+        return tasks.filter(
+          (t) =>
+            t.dueDate &&
+            new Date(t.dueDate) < today &&
+            t.status !== 'closed'
+        );
+      default:
+        return tasks;
+    }
+  }, [tasks, activeFilter, employee?.id]);
 
   const filters: { key: FilterKey; label: string }[] = [
     { key: 'all', label: t('tasks.all') },
     { key: 'myTasks', label: t('tasks.myTasks') },
     { key: 'overdue', label: t('tasks.overdue') },
   ];
+
+  const displayTasks = filteredTasks();
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -114,6 +243,11 @@ export default function TasksScreen() {
       {/* ── Page Title ──────────────────────── */}
       <View style={styles.titleSection}>
         <Text style={styles.pageTitle}>{t('tasks.title')}</Text>
+        {tasks && (
+          <View style={styles.countBadge}>
+            <Text style={styles.countBadgeText}>{displayTasks.length}</Text>
+          </View>
+        )}
       </View>
 
       {/* ── Filter Chips ────────────────────── */}
@@ -139,110 +273,40 @@ export default function TasksScreen() {
         ))}
       </View>
 
-      {/* ── Task List ───────────────────────── */}
-      <ScrollView
-        style={styles.list}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {MOCK_TASKS.map((task) => (
-          <TouchableOpacity
-            key={task.id}
-            style={styles.card}
-            activeOpacity={0.7}
-            onPress={() => router.push(`/(app)/task/${task.id}`)}
-          >
-            {/* Avatar */}
-            <View
-              style={[
-                styles.avatar,
-                { backgroundColor: avatarColor(task.avatar) },
-              ]}
-            >
-              <Text style={styles.avatarText}>{task.avatar}</Text>
-            </View>
-
-            {/* Content */}
-            <View style={styles.cardContent}>
-              <View style={styles.cardTopRow}>
-                <Text
-                  style={[
-                    styles.taskTitle,
-                    task.closed && styles.taskTitleClosed,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {task.title}
-                </Text>
-                <Text style={styles.taskTime}>{task.time}</Text>
-              </View>
-
-              <View style={styles.cardBottomRow}>
-                <View style={styles.messageRow}>
-                  <View
-                    style={[
-                      styles.priorityDot,
-                      { backgroundColor: PRIORITY_DOT[task.priority] },
-                    ]}
-                  />
-                  <Text
-                    style={[
-                      styles.lastMessage,
-                      task.closed && styles.lastMessageClosed,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {task.lastMessage}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.cardMeta}>
-                {/* Category Badge */}
-                <View
-                  style={[
-                    styles.categoryBadge,
-                    {
-                      backgroundColor:
-                        CATEGORY_STYLES[task.category]?.bg ?? Colors.surfaceMuted,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.categoryText,
-                      {
-                        color:
-                          CATEGORY_STYLES[task.category]?.text ??
-                          Colors.textSecondary,
-                      },
-                    ]}
-                  >
-                    {task.category}
-                  </Text>
-                </View>
-
-                {/* Unread Badge */}
-                {task.unread > 0 && (
-                  <View style={styles.unreadBadge}>
-                    <Text style={styles.unreadText}>{task.unread}</Text>
-                  </View>
-                )}
-
-                {/* Attachment icon */}
-                {task.hasAttachment && (
-                  <Ionicons
-                    name="document-text-outline"
-                    size={16}
-                    color={Colors.textMuted}
-                    style={{ marginLeft: Spacing.sm }}
-                  />
-                )}
-              </View>
-            </View>
+      {/* ── Loading / Error / List ───────────── */}
+      {isLoading ? (
+        <View style={styles.centerState}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <Text style={styles.centerStateText}>Loading tasks…</Text>
+        </View>
+      ) : isError ? (
+        <View style={styles.centerState}>
+          <Ionicons name="cloud-offline-outline" size={48} color={Colors.textMuted} />
+          <Text style={styles.centerStateText}>Could not load tasks</Text>
+          <TouchableOpacity onPress={() => refetch()} style={styles.retryBtn}>
+            <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
-        ))}
-      </ScrollView>
+        </View>
+      ) : displayTasks.length === 0 ? (
+        <View style={styles.centerState}>
+          <Ionicons name="checkmark-done-circle-outline" size={48} color={Colors.textMuted} />
+          <Text style={styles.centerStateText}>No tasks found</Text>
+        </View>
+      ) : (
+        <FlashList
+          data={displayTasks}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContent}
+          onRefresh={() => { refetch(); }}
+          refreshing={isFetching && !isLoading}
+          renderItem={({ item }) => (
+            <TaskCard
+              task={item}
+              onPress={() => router.push(`/(app)/task/${item.id}`)}
+            />
+          )}
+        />
+      )}
 
       {/* ── FAB ─────────────────────────────── */}
       <TouchableOpacity
@@ -256,6 +320,7 @@ export default function TasksScreen() {
   );
 }
 
+// ── Styles ─────────────────────────────────────────────
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -285,14 +350,28 @@ const styles = StyleSheet.create({
   },
   // ── Title ───────────────
   titleSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.xl,
     paddingBottom: Spacing.md,
+    gap: Spacing.sm,
   },
   pageTitle: {
     fontSize: Fonts.sizes.title,
     fontWeight: '700',
     color: Colors.textPrimary,
+  },
+  countBadge: {
+    backgroundColor: Colors.primaryLight,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+  },
+  countBadgeText: {
+    fontSize: Fonts.sizes.sm,
+    fontWeight: '700',
+    color: Colors.primaryDark,
   },
   // ── Filters ─────────────
   filterRow: {
@@ -322,9 +401,6 @@ const styles = StyleSheet.create({
     color: Colors.headerText,
   },
   // ── List ────────────────
-  list: {
-    flex: 1,
-  },
   listContent: {
     paddingHorizontal: Spacing.lg,
     paddingBottom: 100,
@@ -405,6 +481,8 @@ const styles = StyleSheet.create({
   cardMeta: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: Spacing.sm,
+    flexWrap: 'wrap',
   },
   categoryBadge: {
     paddingHorizontal: Spacing.sm,
@@ -415,20 +493,41 @@ const styles = StyleSheet.create({
     fontSize: Fonts.sizes.xs,
     fontWeight: '600',
   },
-  unreadBadge: {
-    marginLeft: 'auto',
-    backgroundColor: Colors.unreadBadge,
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
+  statusChip: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 3,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  statusChipText: {
+    fontSize: Fonts.sizes.xs,
+    fontWeight: '500',
+    color: Colors.textMuted,
+  },
+  // ── Center States ────────
+  centerState: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 6,
+    gap: Spacing.md,
+    paddingBottom: 80,
   },
-  unreadText: {
-    color: '#fff',
-    fontSize: Fonts.sizes.xs,
-    fontWeight: '700',
+  centerStateText: {
+    fontSize: Fonts.sizes.md,
+    color: Colors.textMuted,
+  },
+  retryBtn: {
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primary,
+  },
+  retryText: {
+    fontSize: Fonts.sizes.md,
+    fontWeight: '600',
+    color: Colors.textOnPrimary,
   },
   // ── FAB ─────────────────
   fab: {

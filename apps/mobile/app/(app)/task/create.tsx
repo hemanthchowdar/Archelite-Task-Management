@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,19 +7,47 @@ import {
   ScrollView,
   StyleSheet,
   SafeAreaView,
+  Alert,
+  ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Colors, Fonts, Spacing, Radius } from '@/constants/theme';
+import { apiFetch } from '@/api/queryClient';
+import { useAppStore } from '@/store/useAppStore';
 
+// ── Types ──────────────────────────────────────────────
 type Priority = 'low' | 'medium' | 'high' | 'critical' | 'urgent';
-type Category = 'accounting' | 'bookkeeping' | 'construction' | 'invoice';
 
-const PRIORITIES: {
-  key: Priority;
-  dotColor: string;
-}[] = [
+interface Category {
+  id: string;
+  key: string;
+  labelEn: string;
+}
+
+interface EmployeeResult {
+  id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  employeeId?: string;
+}
+
+interface EmployeeListResponse {
+  data: EmployeeResult[];
+}
+
+interface SelectedAssignee {
+  id: string;
+  name: string;
+}
+
+// ── Priority config ────────────────────────────────────
+const PRIORITIES: { key: Priority; dotColor: string }[] = [
   { key: 'low', dotColor: Colors.low },
   { key: 'medium', dotColor: Colors.medium },
   { key: 'high', dotColor: Colors.high },
@@ -27,21 +55,115 @@ const PRIORITIES: {
   { key: 'urgent', dotColor: Colors.urgent },
 ];
 
-const CATEGORIES: Category[] = [
-  'accounting',
-  'bookkeeping',
-  'construction',
-  'invoice',
-];
+// ── Helper: format date for display ───────────────────
+function formatDateDisplay(date: Date): string {
+  return date.toLocaleDateString('en-IN', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
 
+// ── Main Screen ────────────────────────────────────────
 export default function CreateTaskScreen() {
   const { t } = useTranslation();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const actor = useAppStore((s) => s.employee);
 
-  const [priority, setPriority] = useState<Priority>('high');
-  const [category, setCategory] = useState<Category>('accounting');
+  // Form state
+  const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [dueDate] = useState('Fri, 18 Oct');
+  const [priority, setPriority] = useState<Priority>('high');
+  const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
+  const [selectedAssignees, setSelectedAssignees] = useState<SelectedAssignee[]>([]);
+  const [assigneeSearch, setAssigneeSearch] = useState('');
+  const [showAssigneeDropdown, setShowAssigneeDropdown] = useState(false);
+
+  // Date picker state
+  const [dueDate, setDueDate] = useState<Date | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+
+  // ── Fetch categories from API ──────────────────────
+  const { data: categories = [] } = useQuery<Category[]>({
+    queryKey: ['task-categories'],
+    queryFn: () => apiFetch<Category[]>('/tasks/categories'),
+  });
+
+  // ── Search employees (debounced by query length check) ──
+  const { data: employeeResults, isFetching: isSearching } = useQuery<EmployeeListResponse>({
+    queryKey: ['employees-search', assigneeSearch],
+    queryFn: () =>
+      apiFetch<EmployeeListResponse>(`/employees?search=${encodeURIComponent(assigneeSearch)}&limit=10`),
+    enabled: assigneeSearch.trim().length >= 2,
+  });
+
+  const searchResults = employeeResults?.data ?? [];
+
+  // ── Create task mutation ───────────────────────────
+  const createMutation = useMutation({
+    mutationFn: (payload: {
+      title: string;
+      description?: string;
+      priority: Priority;
+      dueDate?: string;
+      categoryId?: string;
+      assigneeIds: string[];
+    }) =>
+      apiFetch('/tasks', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      router.back();
+    },
+    onError: (err: Error) => {
+      Alert.alert('Create Failed', err.message);
+    },
+  });
+
+  // ── Handlers ──────────────────────────────────────
+  const addAssignee = useCallback((emp: EmployeeResult) => {
+    if (!selectedAssignees.some((a) => a.id === emp.id)) {
+      setSelectedAssignees((prev) => [...prev, { id: emp.id, name: emp.name }]);
+    }
+    setAssigneeSearch('');
+    setShowAssigneeDropdown(false);
+  }, [selectedAssignees]);
+
+  const removeAssignee = useCallback((id: string) => {
+    setSelectedAssignees((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
+  const onDateChange = (_event: DateTimePickerEvent, selectedDate?: Date) => {
+    setShowDatePicker(Platform.OS === 'ios');
+    if (selectedDate) {
+      setDueDate(selectedDate);
+    }
+  };
+
+  const handleSubmit = () => {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      Alert.alert('Validation Error', 'Task title is required.');
+      return;
+    }
+    if (selectedAssignees.length === 0) {
+      Alert.alert('Validation Error', 'Please select at least one assignee.');
+      return;
+    }
+
+    createMutation.mutate({
+      title: trimmedTitle,
+      description: description.trim() || undefined,
+      priority,
+      dueDate: dueDate ? dueDate.toISOString() : undefined,
+      categoryId: selectedCategory?.id ?? undefined,
+      assigneeIds: selectedAssignees.map((a) => a.id),
+    });
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -51,12 +173,12 @@ export default function CreateTaskScreen() {
           <Ionicons name="close" size={24} color={Colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{t('tasks.newTask')}</Text>
-        <TouchableOpacity>
-          <Ionicons
-            name="ellipsis-vertical"
-            size={22}
-            color={Colors.textPrimary}
-          />
+        <TouchableOpacity onPress={handleSubmit} disabled={createMutation.isPending}>
+          {createMutation.isPending ? (
+            <ActivityIndicator size="small" color={Colors.primary} />
+          ) : (
+            <Text style={styles.headerSaveBtn}>Save</Text>
+          )}
         </TouchableOpacity>
       </View>
 
@@ -64,7 +186,24 @@ export default function CreateTaskScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
+        {/* ── Task Title (autoFocus) ─────────── */}
+        <Text style={styles.sectionLabel}>
+          {t('tasks.title') ?? 'Task Title'}
+          <Text style={styles.required}> *</Text>
+        </Text>
+        <TextInput
+          style={styles.titleInput}
+          placeholder="e.g. Submit GST filing for Q3"
+          placeholderTextColor={Colors.textMuted}
+          value={title}
+          onChangeText={setTitle}
+          autoFocus
+          returnKeyType="next"
+          maxLength={200}
+        />
+
         {/* ── Priority ──────────────────────── */}
         <Text style={styles.sectionLabel}>{t('tasks.priority')}</Text>
         <View style={styles.chipGrid}>
@@ -81,7 +220,7 @@ export default function CreateTaskScreen() {
                 style={[
                   styles.priorityDot,
                   { backgroundColor: p.dotColor },
-                  priority === p.key && p.key === 'high' && { backgroundColor: '#fff' },
+                  priority === p.key && { backgroundColor: '#fff' },
                 ]}
               />
               <Text
@@ -98,38 +237,150 @@ export default function CreateTaskScreen() {
 
         {/* ── Due Date ──────────────────────── */}
         <Text style={styles.sectionLabel}>{t('tasks.dueDate')}</Text>
-        <TouchableOpacity style={styles.dateInput}>
-          <Text style={styles.dateText}>{dueDate}</Text>
-          <Ionicons
-            name="calendar-outline"
-            size={20}
-            color={Colors.textSecondary}
-          />
+        <TouchableOpacity
+          style={styles.dateInput}
+          onPress={() => setShowDatePicker(true)}
+        >
+          <Text style={[styles.dateText, !dueDate && styles.datePlaceholder]}>
+            {dueDate ? formatDateDisplay(dueDate) : 'Select due date (optional)'}
+          </Text>
+          <View style={styles.dateActions}>
+            {dueDate && (
+              <TouchableOpacity
+                onPress={() => setDueDate(null)}
+                style={styles.clearDateBtn}
+              >
+                <Ionicons name="close-circle" size={18} color={Colors.textMuted} />
+              </TouchableOpacity>
+            )}
+            <Ionicons name="calendar-outline" size={20} color={Colors.textSecondary} />
+          </View>
         </TouchableOpacity>
+        {showDatePicker && (
+          <DateTimePicker
+            value={dueDate ?? new Date()}
+            mode="date"
+            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+            minimumDate={new Date()}
+            onChange={onDateChange}
+          />
+        )}
 
         {/* ── Category ──────────────────────── */}
         <Text style={styles.sectionLabel}>{t('tasks.category')}</Text>
-        <View style={styles.chipGrid}>
-          {CATEGORIES.map((c) => (
-            <TouchableOpacity
-              key={c}
-              style={[
-                styles.categoryChip,
-                category === c && styles.categoryChipActive,
-              ]}
-              onPress={() => setCategory(c)}
-            >
-              <Text
+        {categories.length === 0 ? (
+          <Text style={styles.emptyNote}>Loading categories…</Text>
+        ) : (
+          <View style={styles.chipGrid}>
+            {categories.map((c) => (
+              <TouchableOpacity
+                key={c.id}
                 style={[
-                  styles.categoryText,
-                  category === c && styles.categoryTextActive,
+                  styles.categoryChip,
+                  selectedCategory?.id === c.id && styles.categoryChipActive,
                 ]}
+                onPress={() =>
+                  setSelectedCategory((prev) =>
+                    prev?.id === c.id ? null : c
+                  )
+                }
               >
-                {t(`tasks.${c}`)}
-              </Text>
-            </TouchableOpacity>
-          ))}
+                <Text
+                  style={[
+                    styles.categoryText,
+                    selectedCategory?.id === c.id && styles.categoryTextActive,
+                  ]}
+                >
+                  {c.labelEn}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {/* ── Assignee Picker ───────────────── */}
+        <Text style={styles.sectionLabel}>
+          Assignees
+          <Text style={styles.required}> *</Text>
+        </Text>
+
+        {/* Selected assignees chips */}
+        {selectedAssignees.length > 0 && (
+          <View style={styles.selectedAssignees}>
+            {selectedAssignees.map((a, index) => (
+              <View key={a.id} style={styles.assigneeChip}>
+                <View style={styles.assigneeChipAvatar}>
+                  <Text style={styles.assigneeChipAvatarText}>
+                    {a.name.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+                <Text style={styles.assigneeChipName}>
+                  {a.name}
+                  {index === 0 && (
+                    <Text style={styles.assigneeChipRole}> (Owner)</Text>
+                  )}
+                </Text>
+                <TouchableOpacity onPress={() => removeAssignee(a.id)}>
+                  <Ionicons name="close" size={16} color={Colors.textMuted} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* Search input */}
+        <View style={styles.searchWrapper}>
+          <Ionicons name="search" size={18} color={Colors.textMuted} style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search employees by name or phone…"
+            placeholderTextColor={Colors.textMuted}
+            value={assigneeSearch}
+            onChangeText={(text) => {
+              setAssigneeSearch(text);
+              setShowAssigneeDropdown(text.trim().length >= 2);
+            }}
+            returnKeyType="search"
+          />
+          {isSearching && (
+            <ActivityIndicator size="small" color={Colors.primary} style={styles.searchSpinner} />
+          )}
         </View>
+
+        {/* Dropdown results */}
+        {showAssigneeDropdown && searchResults.length > 0 && (
+          <View style={styles.dropdown}>
+            {searchResults.map((emp) => {
+              const alreadySelected = selectedAssignees.some((a) => a.id === emp.id);
+              return (
+                <TouchableOpacity
+                  key={emp.id}
+                  style={[styles.dropdownItem, alreadySelected && styles.dropdownItemSelected]}
+                  onPress={() => !alreadySelected && addAssignee(emp)}
+                  disabled={alreadySelected}
+                >
+                  <View style={styles.dropdownAvatar}>
+                    <Text style={styles.dropdownAvatarText}>
+                      {emp.name.charAt(0).toUpperCase()}
+                    </Text>
+                  </View>
+                  <View style={styles.dropdownInfo}>
+                    <Text style={styles.dropdownName}>{emp.name}</Text>
+                    <Text style={styles.dropdownSub}>
+                      {emp.phone}{emp.email ? ` · ${emp.email}` : ''}
+                    </Text>
+                  </View>
+                  {alreadySelected && (
+                    <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+        {showAssigneeDropdown && assigneeSearch.trim().length >= 2 && searchResults.length === 0 && !isSearching && (
+          <Text style={styles.emptyNote}>No employees found for "{assigneeSearch}"</Text>
+        )}
 
         {/* ── Description ───────────────────── */}
         <Text style={styles.sectionLabel}>{t('tasks.description')}</Text>
@@ -143,22 +394,24 @@ export default function CreateTaskScreen() {
           onChangeText={setDescription}
         />
 
-        {/* ── Attachment area ────────────────── */}
+        {/* ── Attachment area (placeholder) ──── */}
         <View style={styles.attachRow}>
-          <TouchableOpacity style={styles.attachBox}>
-            <Ionicons
-              name="camera-outline"
-              size={24}
-              color={Colors.textMuted}
-            />
+          <TouchableOpacity
+            style={styles.attachBox}
+            onPress={() =>
+              Alert.alert('Coming Soon', 'Photo upload will be available in a future update.')
+            }
+          >
+            <Ionicons name="camera-outline" size={24} color={Colors.textMuted} />
             <Text style={styles.attachLabel}>{t('tasks.photo')}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.attachBox}>
-            <Ionicons
-              name="document-outline"
-              size={24}
-              color={Colors.textMuted}
-            />
+          <TouchableOpacity
+            style={styles.attachBox}
+            onPress={() =>
+              Alert.alert('Coming Soon', 'Document upload will be available in a future update.')
+            }
+          >
+            <Ionicons name="document-outline" size={24} color={Colors.textMuted} />
             <Text style={styles.attachLabel}>{t('tasks.document')}</Text>
           </TouchableOpacity>
         </View>
@@ -167,18 +420,29 @@ export default function CreateTaskScreen() {
       {/* ── Bottom CTA ──────────────────────── */}
       <View style={styles.bottomCTA}>
         <TouchableOpacity
-          style={styles.createButton}
+          style={[
+            styles.createButton,
+            createMutation.isPending && styles.createButtonDisabled,
+          ]}
           activeOpacity={0.85}
-          onPress={() => router.back()}
+          onPress={handleSubmit}
+          disabled={createMutation.isPending}
         >
-          <Text style={styles.createButtonText}>{t('tasks.createTask')}</Text>
-          <Ionicons name="arrow-forward" size={20} color={Colors.textOnPrimary} />
+          {createMutation.isPending ? (
+            <ActivityIndicator size="small" color={Colors.textOnPrimary} />
+          ) : (
+            <>
+              <Text style={styles.createButtonText}>{t('tasks.createTask')}</Text>
+              <Ionicons name="arrow-forward" size={20} color={Colors.textOnPrimary} />
+            </>
+          )}
         </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
 }
 
+// ── Styles ─────────────────────────────────────────────
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -199,6 +463,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.textPrimary,
   },
+  headerSaveBtn: {
+    fontSize: Fonts.sizes.md,
+    fontWeight: '700',
+    color: Colors.primary,
+  },
   scroll: {
     flex: 1,
   },
@@ -213,6 +482,26 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     marginBottom: Spacing.md,
     marginTop: Spacing.xl,
+  },
+  required: {
+    color: Colors.error,
+  },
+  emptyNote: {
+    fontSize: Fonts.sizes.sm,
+    color: Colors.textMuted,
+    fontStyle: 'italic',
+  },
+  // ── Title Input ─────────
+  titleInput: {
+    height: 52,
+    borderRadius: Radius.md,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.lg,
+    fontSize: Fonts.sizes.lg,
+    fontWeight: '600',
+    color: Colors.textPrimary,
   },
   // ── Priority Chips ──────
   chipGrid: {
@@ -264,6 +553,18 @@ const styles = StyleSheet.create({
   dateText: {
     fontSize: Fonts.sizes.md,
     color: Colors.textPrimary,
+    flex: 1,
+  },
+  datePlaceholder: {
+    color: Colors.textMuted,
+  },
+  dateActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  clearDateBtn: {
+    padding: 2,
   },
   // ── Category Chips ──────
   categoryChip: {
@@ -286,6 +587,123 @@ const styles = StyleSheet.create({
   categoryTextActive: {
     color: Colors.headerText,
     fontWeight: '700',
+  },
+  // ── Assignee Chips ───────
+  selectedAssignees: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  assigneeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    backgroundColor: Colors.primaryLight,
+    borderRadius: Radius.full,
+    paddingVertical: Spacing.xs,
+    paddingLeft: Spacing.xs,
+    paddingRight: Spacing.sm,
+    borderWidth: 1,
+    borderColor: `${Colors.primary}40`,
+  },
+  assigneeChipAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  assigneeChipAvatarText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  assigneeChipName: {
+    fontSize: Fonts.sizes.sm,
+    fontWeight: '600',
+    color: Colors.primaryDark,
+  },
+  assigneeChipRole: {
+    fontSize: Fonts.sizes.xs,
+    fontWeight: '400',
+    color: Colors.textMuted,
+  },
+  // ── Search ──────────────
+  searchWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 48,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.md,
+    gap: Spacing.sm,
+  },
+  searchIcon: {
+    flexShrink: 0,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: Fonts.sizes.md,
+    color: Colors.textPrimary,
+    height: '100%',
+  },
+  searchSpinner: {
+    flexShrink: 0,
+  },
+  // ── Dropdown ────────────
+  dropdown: {
+    marginTop: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: Spacing.md,
+    gap: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.borderLight,
+  },
+  dropdownItemSelected: {
+    backgroundColor: Colors.surfaceMuted,
+  },
+  dropdownAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dropdownAvatarText: {
+    fontSize: Fonts.sizes.md,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  dropdownInfo: {
+    flex: 1,
+  },
+  dropdownName: {
+    fontSize: Fonts.sizes.md,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+  },
+  dropdownSub: {
+    fontSize: Fonts.sizes.xs,
+    color: Colors.textMuted,
+    marginTop: 2,
   },
   // ── Description ─────────
   descriptionInput: {
@@ -327,6 +745,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.lg,
     backgroundColor: Colors.background,
+    borderTopWidth: 1,
+    borderTopColor: Colors.borderLight,
   },
   createButton: {
     flexDirection: 'row',
@@ -336,6 +756,9 @@ const styles = StyleSheet.create({
     height: 52,
     borderRadius: Radius.md,
     backgroundColor: Colors.primary,
+  },
+  createButtonDisabled: {
+    opacity: 0.6,
   },
   createButtonText: {
     fontSize: Fonts.sizes.lg,
