@@ -44,9 +44,17 @@ const authRoutes: FastifyPluginAsync = async (server) => {
     }
 
     // 2. Generate 6-digit OTP
-    // Default mock OTP to '123456' for the two seeded test accounts in development
+    // Fixed OTP '123456' for all seeded dev accounts so any test user can log in
+    const DEV_PHONES = new Set([
+      '+919999999999', // Super Admin
+      '+918888888888', // Ravi Kumar
+      '+919999999991', // Hemanth
+      '+919999999992', // Keerthi
+      '+919999999993', // Yash
+      '+919999999994', // Lakshmi
+    ]);
     let otp = '';
-    if (phone === '+919999999999' || phone === '+918888888888') {
+    if (DEV_PHONES.has(phone)) {
       otp = '123456';
     } else {
       otp = Math.floor(100000 + Math.random() * 900000).toString();

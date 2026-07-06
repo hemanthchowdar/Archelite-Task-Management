@@ -3,83 +3,161 @@ import {
   View,
   Text,
   ScrollView,
+  TextInput,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
-  Image,
+  Modal,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import * as Haptics from 'expo-haptics';
 import { Colors, Fonts, Spacing, Radius, avatarColor } from '@/constants/theme';
+import { apiFetch } from '@/api/queryClient';
+import { useAppStore } from '@/store/useAppStore';
 
-// ── Mock Data ─────────────────────────────────────────
-const MOCK_APPROVALS = [
-  {
-    id: '1',
-    title: 'Cement Procurement: 500 Bags',
-    status: 'URGENT',
-    statusColor: Colors.urgent,
-    requester: 'Ramesh Kumar',
-    role: 'Site Supervisor',
-    time: 'Today, 10:45 AM',
-    avatar: 'R',
-    amountLabel: 'AMOUNT',
-    amount: '₹2,45,000',
-    linkLabel: 'View PO',
-    icon: 'copy-outline' as const,
-  },
-  {
-    id: '2',
-    title: 'GST Filing - Oct Quarter',
-    status: 'NEEDS VERIFICATION',
-    statusColor: Colors.warning,
-    requester: 'Anjali Gupta',
-    role: 'Accountant',
-    time: 'Yesterday',
-    avatar: 'A',
-    amountLabel: 'INVOICE TOTAL',
-    amount: '₹45,800',
-    linkLabel: 'Invoice.pdf',
-    icon: 'document-outline' as const,
-  },
-  {
-    id: '3',
-    title: 'Daily Labor Wages: Tower 4',
-    status: 'ROUTINE',
-    statusColor: Colors.textMuted,
-    requester: 'Vikram Singh',
-    role: 'Project Engineer',
-    time: '2 days ago',
-    avatar: 'V',
-    amountLabel: 'TOTAL PAYOUT',
-    amount: '₹12,400',
-    linkLabel: 'View Attendance',
-    icon: 'people-outline' as const,
-  },
-];
+// ── Types ──────────────────────────────────────────────
+interface Employee {
+  id: string;
+  name: string;
+  email?: string;
+}
 
-type ApprovalFilter = 'all' | 'highPriority' | 'invoices';
+interface ApprovalRequest {
+  id: string;
+  taskId: string;
+  approverId: string;
+  status: 'pending' | 'approved' | 'rejected';
+  decisionComment?: string;
+  createdAt: string;
+  requestedBy: Employee;
+  approver: Employee;
+}
+
+interface TaskWithApprovals {
+  id: string;
+  title: string;
+  priority: string;
+  status: string;
+  approvals: ApprovalRequest[];
+}
+
+// ── Priority colours ────────────────────────────────────
+const PRIORITY_COLORS: Record<string, string> = {
+  urgent: Colors.urgent,
+  critical: Colors.critical,
+  high: Colors.high,
+  medium: Colors.medium,
+  low: Colors.low,
+};
+
+function relativeTime(dateStr: string) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 export default function ApprovalsScreen() {
   const { t } = useTranslation();
-  const [activeFilter, setActiveFilter] = useState<ApprovalFilter>('all');
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const actor = useAppStore((s) => s.employee);
 
-  const filters: { key: ApprovalFilter; label: string }[] = [
-    { key: 'all', label: t('approvals.allRequests') },
-    { key: 'highPriority', label: t('approvals.highPriority') },
-    { key: 'invoices', label: t('approvals.invoices') },
-  ];
+  // Decision modal state
+  const [decisionModal, setDecisionModal] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<TaskWithApprovals | null>(null);
+  const [selectedApproval, setSelectedApproval] = useState<ApprovalRequest | null>(null);
+  const [decision, setDecision] = useState<'approved' | 'rejected' | null>(null);
+  const [comment, setComment] = useState('');
+
+  // ── Fetch tasks where I am a pending approver ──────
+  const { data: tasks = [], isLoading, refetch } = useQuery<TaskWithApprovals[]>({
+    queryKey: ['my-approvals', actor?.id],
+    queryFn: () => apiFetch<TaskWithApprovals[]>('/tasks/my-approvals'),
+    enabled: !!actor?.id,
+    refetchInterval: 3000,
+  });
+
+  const pendingCount = tasks.reduce(
+    (acc, t) =>
+      acc + (t.approvals?.filter((a) => a.status === 'pending').length ?? 0),
+    0
+  );
+
+  // ── Mutation: decide on approval ────────────────────────
+  const decisionMutation = useMutation({
+    mutationFn: ({
+      taskId,
+      approvalId,
+      status,
+      decisionComment,
+    }: {
+      taskId: string;
+      approvalId: string;
+      status: 'approved' | 'rejected';
+      decisionComment: string;
+    }) =>
+      apiFetch(`/tasks/${taskId}/approvals/${approvalId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, decisionComment }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-approvals'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setDecisionModal(false);
+      setComment('');
+      setSelectedApproval(null);
+      setSelectedTask(null);
+      setDecision(null);
+    },
+    onError: (err: Error) => {
+      Alert.alert('Failed', err.message);
+    },
+  });
+
+  const openDecision = (
+    task: TaskWithApprovals,
+    approval: ApprovalRequest,
+    d: 'approved' | 'rejected'
+  ) => {
+    setSelectedTask(task);
+    setSelectedApproval(approval);
+    setDecision(d);
+    setComment('');
+    setDecisionModal(true);
+  };
+
+  const submitDecision = () => {
+    if (!selectedTask || !selectedApproval || !decision) return;
+    if (!comment.trim()) {
+      Alert.alert('Comment Required', 'Please enter a comment before submitting.');
+      return;
+    }
+    decisionMutation.mutate({
+      taskId: selectedTask.id,
+      approvalId: selectedApproval.id,
+      status: decision,
+      decisionComment: comment.trim(),
+    });
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
       {/* ── Header ──────────────────────────── */}
       <View style={styles.header}>
-        <TouchableOpacity>
-          <Ionicons name="menu" size={24} color={Colors.headerText} />
-        </TouchableOpacity>
+        <View style={{ width: 24 }} />
         <Text style={styles.headerTitle}>{t('common.appName')}</Text>
-        <TouchableOpacity>
-          <Ionicons name="search" size={22} color={Colors.headerText} />
+        <TouchableOpacity onPress={() => refetch()}>
+          <Ionicons name="refresh-outline" size={22} color={Colors.headerText} />
         </TouchableOpacity>
       </View>
 
@@ -91,101 +169,217 @@ export default function ApprovalsScreen() {
         {/* ── Title + Pending Badge ────────── */}
         <View style={styles.titleRow}>
           <Text style={styles.pageTitle}>{t('approvals.title')}</Text>
-          <View style={styles.pendingBadge}>
-            <Text style={styles.pendingText}>
-              {t('approvals.pending', { count: 4 })}
-            </Text>
-          </View>
-        </View>
-        <Text style={styles.subtitle}>{t('approvals.subtitle')}</Text>
-
-        {/* ── Filter Chips ────────────────── */}
-        <View style={styles.filterRow}>
-          {filters.map((f) => (
-            <TouchableOpacity
-              key={f.key}
-              style={[
-                styles.filterChip,
-                activeFilter === f.key && styles.filterChipActive,
-              ]}
-              onPress={() => setActiveFilter(f.key)}
-            >
-              <Text
-                style={[
-                  styles.filterText,
-                  activeFilter === f.key && styles.filterTextActive,
-                ]}
-              >
-                {f.label}
+          {pendingCount > 0 && (
+            <View style={styles.pendingBadge}>
+              <Text style={styles.pendingText}>
+                {pendingCount} pending
               </Text>
-            </TouchableOpacity>
-          ))}
+            </View>
+          )}
         </View>
+        <Text style={styles.subtitle}>Tasks waiting for your approval</Text>
 
-        {/* ── Approval Cards ──────────────── */}
-        {MOCK_APPROVALS.map((item) => (
-          <View key={item.id} style={styles.card}>
-            {/* Status label */}
-            <View style={styles.cardStatusRow}>
-              <Text style={[styles.statusLabel, { color: item.statusColor }]}>
-                {item.status}
-              </Text>
-              <Ionicons
-                name={item.icon}
-                size={20}
-                color={Colors.textMuted}
-              />
-            </View>
-
-            {/* Title */}
-            <Text style={styles.cardTitle}>{item.title}</Text>
-
-            {/* Requester */}
-            <View style={styles.requesterRow}>
-              <View
-                style={[
-                  styles.requesterAvatar,
-                  { backgroundColor: avatarColor(item.avatar) },
-                ]}
-              >
-                <Text style={styles.requesterAvatarText}>{item.avatar}</Text>
-              </View>
-              <View>
-                <Text style={styles.requesterName}>{item.requester}</Text>
-                <Text style={styles.requesterMeta}>
-                  {item.role} • {item.time}
-                </Text>
-              </View>
-            </View>
-
-            {/* Amount row */}
-            <View style={styles.amountRow}>
-              <View>
-                <Text style={styles.amountLabel}>{item.amountLabel}</Text>
-                <Text style={styles.amountValue}>{item.amount}</Text>
-              </View>
-              <TouchableOpacity style={styles.linkButton}>
-                <Ionicons
-                  name="eye-outline"
-                  size={14}
-                  color={Colors.primary}
-                />
-                <Text style={styles.linkText}>{item.linkLabel}</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Action buttons */}
-            <View style={styles.actionRow}>
-              <TouchableOpacity style={styles.rejectButton}>
-                <Text style={styles.rejectText}>{t('approvals.reject')}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.approveButton}>
-                <Text style={styles.approveText}>{t('approvals.approve')}</Text>
-              </TouchableOpacity>
-            </View>
+        {/* ── States ──────────────────────── */}
+        {isLoading ? (
+          <View style={styles.centerState}>
+            <ActivityIndicator size="large" color={Colors.primary} />
+            <Text style={styles.centerText}>Loading approvals…</Text>
           </View>
-        ))}
+        ) : tasks.length === 0 ? (
+          <View style={styles.centerState}>
+            <Ionicons name="checkmark-circle-outline" size={56} color={Colors.success} />
+            <Text style={styles.centerTitle}>All clear!</Text>
+            <Text style={styles.centerText}>No pending approvals for you right now.</Text>
+          </View>
+        ) : (
+          tasks.map((task) => {
+            const myApprovals = task.approvals.filter(
+              (a) => a.approverId === actor?.id
+            );
+            const allDecided = myApprovals.length > 0 && myApprovals.every((a) => a.status !== 'pending');
+            const priorityColor = PRIORITY_COLORS[task.priority] ?? Colors.medium;
+
+            return (
+              <View key={task.id} style={[styles.card, allDecided && { opacity: 0.75 }]}>
+                {/* Priority + Task title */}
+                <View style={styles.cardTopRow}>
+                  <View
+                    style={[
+                      styles.priorityDot,
+                      { backgroundColor: priorityColor },
+                    ]}
+                  />
+                  <Text
+                    style={[styles.priorityLabel, { color: priorityColor }]}
+                  >
+                    {task.priority.toUpperCase()}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  onPress={() => router.push(`/task/${task.id}` as any)}
+                  activeOpacity={0.8}
+                >
+                  <Text
+                    style={[
+                      styles.cardTitle,
+                      allDecided && { textDecorationLine: 'line-through', color: Colors.textMuted },
+                    ]}
+                  >
+                    {task.title}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Each approval on this task for me */}
+                {myApprovals.map((approval) => {
+                  const isPending = approval.status === 'pending';
+                  const isApproved = approval.status === 'approved';
+
+                  return (
+                    <View key={approval.id} style={{ marginTop: 8 }}>
+                      {/* Requester row */}
+                      <View style={styles.requesterRow}>
+                        <View
+                          style={[
+                            styles.requesterAvatar,
+                            {
+                              backgroundColor: avatarColor(
+                                approval.requestedBy.name
+                              ),
+                            },
+                          ]}
+                        >
+                          <Text style={styles.requesterAvatarText}>
+                            {approval.requestedBy.name.charAt(0).toUpperCase()}
+                          </Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.requesterName}>
+                            {approval.requestedBy.name}
+                          </Text>
+                          <Text style={styles.requesterMeta}>
+                            Requested approval · {relativeTime(approval.createdAt)}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {isPending ? (
+                        /* Action buttons */
+                        <View style={styles.actionRow}>
+                          <TouchableOpacity
+                            style={styles.rejectButton}
+                            onPress={() => openDecision(task, approval, 'rejected')}
+                          >
+                            <Ionicons name="close" size={16} color={Colors.textPrimary} />
+                            <Text style={styles.rejectText}>{t('approvals.reject')}</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.approveButton}
+                            onPress={() => openDecision(task, approval, 'approved')}
+                          >
+                            <Ionicons name="checkmark" size={16} color="#fff" />
+                            <Text style={styles.approveText}>{t('approvals.approve')}</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : (
+                        /* Decided status row */
+                        <View style={styles.decidedStatusRow}>
+                          <Ionicons
+                            name={isApproved ? 'checkmark-circle' : 'close-circle'}
+                            size={16}
+                            color={isApproved ? Colors.success : Colors.error}
+                          />
+                          <Text
+                            style={[
+                              styles.decidedStatusText,
+                              { color: isApproved ? Colors.success : Colors.error }
+                            ]}
+                          >
+                            {isApproved ? 'Approved' : 'Rejected'}
+                            {approval.decisionComment ? ` · ${approval.decisionComment}` : ''}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
+            );
+          })
+        )}
       </ScrollView>
+
+      {/* ── Decision Modal ───────────────────── */}
+      <Modal
+        visible={decisionModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDecisionModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setDecisionModal(false)}
+        >
+          <View style={styles.decisionSheet}>
+            <View style={styles.sheetHandle} />
+
+            <Text style={styles.decisionTitle}>
+              {decision === 'approved' ? '✅ Approve Task' : '❌ Reject Task'}
+            </Text>
+            <Text style={styles.decisionTaskName} numberOfLines={2}>
+              {selectedTask?.title}
+            </Text>
+
+            <Text style={styles.commentLabel}>
+              {decision === 'approved'
+                ? 'Add an approval note (required)'
+                : 'Reason for rejection (required)'}
+            </Text>
+            <TextInput
+              style={styles.commentInput}
+              placeholder={
+                decision === 'approved'
+                  ? 'e.g. Looks good, proceed…'
+                  : 'e.g. Missing documents…'
+              }
+              placeholderTextColor={Colors.textMuted}
+              value={comment}
+              onChangeText={setComment}
+              multiline
+              numberOfLines={3}
+              autoFocus
+            />
+
+            <View style={styles.decisionActions}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setDecisionModal(false)}
+              >
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.submitBtn,
+                  decision === 'rejected' && styles.submitBtnReject,
+                  (!comment.trim() || decisionMutation.isPending) &&
+                    styles.submitBtnDisabled,
+                ]}
+                onPress={submitDecision}
+                disabled={!comment.trim() || decisionMutation.isPending}
+              >
+                {decisionMutation.isPending ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.submitBtnText}>
+                    {decision === 'approved' ? 'Approve' : 'Reject'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -198,20 +392,17 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
     backgroundColor: Colors.header,
   },
   headerTitle: {
-    flex: 1,
     fontSize: Fonts.sizes.xl,
     fontWeight: '700',
     color: Colors.headerText,
-    marginLeft: Spacing.md,
   },
-  scrollView: {
-    flex: 1,
-  },
+  scrollView: { flex: 1 },
   scrollContent: {
     padding: Spacing.lg,
     paddingBottom: 100,
@@ -243,30 +434,21 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginBottom: Spacing.lg,
   },
-  filterRow: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    marginBottom: Spacing.xl,
+  // ── Empty / Loading states
+  centerState: {
+    alignItems: 'center',
+    paddingVertical: 64,
+    gap: Spacing.md,
   },
-  filterChip: {
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surface,
+  centerTitle: {
+    fontSize: Fonts.sizes.xl,
+    fontWeight: '700',
+    color: Colors.textPrimary,
   },
-  filterChipActive: {
-    backgroundColor: Colors.header,
-    borderColor: Colors.header,
-  },
-  filterText: {
-    fontSize: Fonts.sizes.sm,
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  filterTextActive: {
-    color: Colors.headerText,
+  centerText: {
+    fontSize: Fonts.sizes.md,
+    color: Colors.textMuted,
+    textAlign: 'center',
   },
   // ── Card ────────────────
   card: {
@@ -282,13 +464,18 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 2,
   },
-  cardStatusRow: {
+  cardTopRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.sm,
+    gap: Spacing.xs,
+    marginBottom: Spacing.xs,
   },
-  statusLabel: {
+  priorityDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  priorityLabel: {
     fontSize: Fonts.sizes.xs,
     fontWeight: '700',
     letterSpacing: 0.5,
@@ -302,18 +489,21 @@ const styles = StyleSheet.create({
   requesterRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
+    gap: Spacing.sm,
+    backgroundColor: Colors.surfaceMuted,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
   },
   requesterAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: Spacing.sm,
   },
   requesterAvatarText: {
-    fontSize: Fonts.sizes.sm,
+    fontSize: Fonts.sizes.md,
     fontWeight: '700',
     color: '#fff',
   },
@@ -325,51 +515,24 @@ const styles = StyleSheet.create({
   requesterMeta: {
     fontSize: Fonts.sizes.xs,
     color: Colors.textMuted,
-  },
-  amountRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-end',
-    backgroundColor: Colors.surfaceMuted,
-    borderRadius: Radius.sm,
-    padding: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  amountLabel: {
-    fontSize: Fonts.sizes.xs,
-    fontWeight: '700',
-    color: Colors.textMuted,
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  amountValue: {
-    fontSize: Fonts.sizes.xl,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  linkButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  linkText: {
-    fontSize: Fonts.sizes.sm,
-    fontWeight: '600',
-    color: Colors.primary,
+    marginTop: 2,
   },
   actionRow: {
     flexDirection: 'row',
     gap: Spacing.md,
+    marginTop: 4,
   },
   rejectButton: {
     flex: 1,
-    height: 40,
-    borderRadius: Radius.sm,
+    height: 44,
+    borderRadius: Radius.md,
     borderWidth: 1,
     borderColor: Colors.border,
     backgroundColor: Colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
   },
   rejectText: {
     fontSize: Fonts.sizes.md,
@@ -378,15 +541,119 @@ const styles = StyleSheet.create({
   },
   approveButton: {
     flex: 1,
-    height: 40,
-    borderRadius: Radius.sm,
+    height: 44,
+    borderRadius: Radius.md,
     backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
   },
   approveText: {
     fontSize: Fonts.sizes.md,
     fontWeight: '700',
-    color: Colors.textOnPrimary,
+    color: '#fff',
+  },
+  // ── Decision Modal ───────
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  decisionSheet: {
+    backgroundColor: Colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: 36,
+    paddingTop: 12,
+  },
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.border,
+    alignSelf: 'center',
+    marginBottom: Spacing.lg,
+  },
+  decisionTitle: {
+    fontSize: Fonts.sizes.xl,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginBottom: Spacing.xs,
+  },
+  decisionTaskName: {
+    fontSize: Fonts.sizes.md,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.lg,
+  },
+  commentLabel: {
+    fontSize: Fonts.sizes.sm,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    marginBottom: Spacing.sm,
+  },
+  commentInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    fontSize: Fonts.sizes.md,
+    color: Colors.textPrimary,
+    backgroundColor: Colors.surfaceMuted,
+    minHeight: 80,
+    textAlignVertical: 'top',
+    marginBottom: Spacing.lg,
+  },
+  decisionActions: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+  },
+  cancelBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelBtnText: {
+    fontSize: Fonts.sizes.md,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  submitBtn: {
+    flex: 2,
+    height: 48,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.success,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  submitBtnReject: {
+    backgroundColor: Colors.error,
+  },
+  submitBtnDisabled: {
+    opacity: 0.45,
+  },
+  submitBtnText: {
+    fontSize: Fonts.sizes.md,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  decidedStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: Colors.surfaceMuted,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    marginTop: 4,
+  },
+  decidedStatusText: {
+    fontSize: Fonts.sizes.sm,
+    fontWeight: '600',
   },
 });

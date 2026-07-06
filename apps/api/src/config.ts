@@ -1,4 +1,10 @@
-import 'dotenv/config'
+import dotenv from 'dotenv'
+import path from 'path'
+
+// Load local apps/api/.env first
+dotenv.config()
+// Load root .env to inherit shared monorepo configurations
+dotenv.config({ path: path.join(__dirname, '../../../.env') })
 import { z } from 'zod'
 
 /**
@@ -35,6 +41,9 @@ const envSchema = z.object({
   REDIS_URL: z.string().optional(),
   UPSTASH_REDIS_REST_URL: z.string().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
+  SUPABASE_URL: z.string().min(1, 'SUPABASE_URL is required'),
+  SUPABASE_ANON_KEY: z.string().min(1, 'SUPABASE_ANON_KEY is required'),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
 })
 
 export type Env = z.infer<typeof envSchema>

@@ -6,16 +6,18 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  SafeAreaView,
   Alert,
   ActivityIndicator,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { Colors, Fonts, Spacing, Radius } from '@/constants/theme';
 import { apiFetch } from '@/api/queryClient';
 import { useAppStore } from '@/store/useAppStore';
@@ -85,6 +87,15 @@ export default function CreateTaskScreen() {
   const [dueDate, setDueDate] = useState<Date | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
 
+  // Attachment state
+  const [attachments, setAttachments] = useState<{
+    fileUrl: string;
+    fileName: string;
+    fileType: string;
+    sizeBytes: number;
+  }[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+
   // ── Fetch categories from API ──────────────────────
   const { data: categories = [] } = useQuery<Category[]>({
     queryKey: ['task-categories'],
@@ -110,6 +121,12 @@ export default function CreateTaskScreen() {
       dueDate?: string;
       categoryId?: string;
       assigneeIds: string[];
+      attachments?: {
+        fileUrl: string;
+        fileName: string;
+        fileType: string;
+        sizeBytes: number;
+      }[];
     }) =>
       apiFetch('/tasks', {
         method: 'POST',
@@ -144,6 +161,97 @@ export default function CreateTaskScreen() {
     }
   };
 
+  const uploadFile = async (uri: string, fileName: string, mimeType: string) => {
+    setIsUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', {
+        uri: Platform.OS === 'ios' ? uri.replace('file://', '') : uri,
+        name: fileName,
+        type: mimeType,
+      } as any);
+
+      const response = await apiFetch<{
+        fileUrl: string;
+        fileName: string;
+        fileType: string;
+        sizeBytes: number;
+      }>('/tasks/attachments/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      setAttachments((prev) => [...prev, response]);
+      Alert.alert('Upload Successful', `File "${fileName}" uploaded successfully.`);
+    } catch (err: any) {
+      Alert.alert('Upload Failed', err.message || 'An error occurred during upload.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const removeAttachment = (url: string) => {
+    setAttachments((prev) => prev.filter((att) => att.fileUrl !== url));
+  };
+
+  const handlePickPhoto = async () => {
+    const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permissionResult.granted) {
+      Alert.alert('Permission Denied', 'Camera access is required to take photos.');
+      return;
+    }
+
+    Alert.alert(
+      'Upload Photo',
+      'Choose photo source',
+      [
+        {
+          text: 'Camera',
+          onPress: async () => {
+            const result = await ImagePicker.launchCameraAsync({
+              mediaTypes: ['images'],
+              quality: 0.8,
+            });
+            if (!result.canceled && result.assets && result.assets.length > 0) {
+              const asset = result.assets[0];
+              uploadFile(asset.uri, asset.fileName || 'photo.jpg', 'image/jpeg');
+            }
+          },
+        },
+        {
+          text: 'Library',
+          onPress: async () => {
+            const result = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ['images'],
+              quality: 0.8,
+            });
+            if (!result.canceled && result.assets && result.assets.length > 0) {
+              const asset = result.assets[0];
+              uploadFile(asset.uri, asset.fileName || 'photo.jpg', 'image/jpeg');
+            }
+          },
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
+  const handlePickDocument = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        uploadFile(asset.uri, asset.name, asset.mimeType || 'application/octet-stream');
+      }
+    } catch (err) {
+      console.log('Document picking cancelled or failed', err);
+    }
+  };
+
   const handleSubmit = () => {
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
@@ -162,6 +270,7 @@ export default function CreateTaskScreen() {
       dueDate: dueDate ? dueDate.toISOString() : undefined,
       categoryId: selectedCategory?.id ?? undefined,
       assigneeIds: selectedAssignees.map((a) => a.id),
+      attachments,
     });
   };
 
@@ -394,25 +503,57 @@ export default function CreateTaskScreen() {
           onChangeText={setDescription}
         />
 
-        {/* ── Attachment area (placeholder) ──── */}
+        {/* ── Uploaded attachments list ── */}
+        {attachments.length > 0 && (
+          <View style={styles.uploadedAttachmentsContainer}>
+            <Text style={styles.sectionLabel}>Uploaded Files</Text>
+            {attachments.map((att) => (
+              <View key={att.fileUrl} style={styles.uploadedAttachmentRow}>
+                <Ionicons
+                  name={att.fileType.startsWith('image/') ? 'image-outline' : 'document-outline'}
+                  size={20}
+                  color={Colors.primary}
+                />
+                <Text style={styles.uploadedAttachmentName} numberOfLines={1}>
+                  {att.fileName}
+                </Text>
+                <TouchableOpacity onPress={() => removeAttachment(att.fileUrl)}>
+                  <Ionicons name="trash-outline" size={20} color={Colors.error} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* ── Attachment area ──── */}
         <View style={styles.attachRow}>
           <TouchableOpacity
-            style={styles.attachBox}
-            onPress={() =>
-              Alert.alert('Coming Soon', 'Photo upload will be available in a future update.')
-            }
+            style={[styles.attachBox, isUploading && { opacity: 0.5 }]}
+            onPress={handlePickPhoto}
+            disabled={isUploading}
           >
-            <Ionicons name="camera-outline" size={24} color={Colors.textMuted} />
-            <Text style={styles.attachLabel}>{t('tasks.photo')}</Text>
+            {isUploading ? (
+              <ActivityIndicator size="small" color={Colors.primary} />
+            ) : (
+              <>
+                <Ionicons name="camera-outline" size={24} color={Colors.textSecondary} />
+                <Text style={styles.attachLabel}>{t('tasks.photo') || 'Photo'}</Text>
+              </>
+            )}
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.attachBox}
-            onPress={() =>
-              Alert.alert('Coming Soon', 'Document upload will be available in a future update.')
-            }
+            style={[styles.attachBox, isUploading && { opacity: 0.5 }]}
+            onPress={handlePickDocument}
+            disabled={isUploading}
           >
-            <Ionicons name="document-outline" size={24} color={Colors.textMuted} />
-            <Text style={styles.attachLabel}>{t('tasks.document')}</Text>
+            {isUploading ? (
+              <ActivityIndicator size="small" color={Colors.primary} />
+            ) : (
+              <>
+                <Ionicons name="document-outline" size={24} color={Colors.textSecondary} />
+                <Text style={styles.attachLabel}>{t('tasks.document') || 'Document'}</Text>
+              </>
+            )}
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -765,5 +906,27 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.textOnPrimary,
     letterSpacing: 0.5,
+  },
+  uploadedAttachmentsContainer: {
+    marginTop: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  uploadedAttachmentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  uploadedAttachmentName: {
+    fontSize: Fonts.sizes.md,
+    fontWeight: '500',
+    color: Colors.textPrimary,
+    flex: 1,
+    marginLeft: Spacing.sm,
+    marginRight: Spacing.md,
   },
 });
