@@ -42,6 +42,7 @@ interface Task {
   lastActivityAt: string;
   category: Category | null;
   assignments: TaskAssignment[];
+  createdById: string;
   _count?: { comments: number };
 }
 
@@ -196,9 +197,7 @@ export default function TasksScreen() {
 
     switch (activeFilter) {
       case 'myTasks':
-        return tasks.filter((t) =>
-          t.assignments.some((a) => a.employeeId === employee?.id)
-        );
+        return tasks.filter((t) => t.createdById === employee?.id);
       case 'overdue':
         return tasks.filter(
           (t) =>
