@@ -47,7 +47,7 @@ interface Task {
 }
 
 // ── Constants ──────────────────────────────────────────
-type FilterKey = 'all' | 'myTasks' | 'overdue';
+type FilterKey = 'all' | 'myTasks' | 'assignedTasks' | 'overdue';
 
 const CATEGORY_STYLES: Record<string, { bg: string; text: string }> = {
   bookkeeping: { bg: Colors.bookkeeping, text: Colors.bookkeepingText },
@@ -198,6 +198,10 @@ export default function TasksScreen() {
     switch (activeFilter) {
       case 'myTasks':
         return tasks.filter((t) => t.createdById === employee?.id);
+      case 'assignedTasks':
+        return tasks.filter((t) =>
+          t.assignments.some((a) => a.employeeId === employee?.id)
+        );
       case 'overdue':
         return tasks.filter(
           (t) =>
@@ -213,6 +217,7 @@ export default function TasksScreen() {
   const filters: { key: FilterKey; label: string }[] = [
     { key: 'all', label: t('tasks.all') },
     { key: 'myTasks', label: t('tasks.myTasks') },
+    { key: 'assignedTasks', label: t('tasks.assignedTasks') ?? 'Assigned tasks' },
     { key: 'overdue', label: t('tasks.overdue') },
   ];
 

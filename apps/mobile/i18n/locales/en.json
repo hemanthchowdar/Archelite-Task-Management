@@ -29,6 +29,7 @@
     "title": "Tasks",
     "all": "All",
     "myTasks": "My tasks",
+    "assignedTasks": "Assigned tasks",
     "overdue": "Overdue",
     "createTask": "CREATE TASK",
     "newTask": "New task",
