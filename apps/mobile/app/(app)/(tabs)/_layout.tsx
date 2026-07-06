@@ -3,9 +3,29 @@ import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Fonts } from '@/constants/theme';
 import { View, Text, StyleSheet } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
+import { useAppStore } from '@/store/useAppStore';
+import { apiFetch } from '@/api/queryClient';
 
 export default function TabsLayout() {
   const { t } = useTranslation();
+  const actor = useAppStore((s) => s.employee);
+
+  // Fetch pending approvals for the tab badge
+  const { data: tasks = [] } = useQuery<any[]>({
+    queryKey: ['my-approvals', actor?.id],
+    queryFn: () => apiFetch<any[]>('/tasks/my-approvals'),
+    enabled: !!actor?.id,
+  });
+
+  const badgeCount = tasks.reduce(
+    (acc, t) =>
+      acc +
+      (t.approvals?.filter(
+        (a: any) => a.status === 'pending' && a.approverId === actor?.id
+      ).length ?? 0),
+    0
+  );
 
   return (
     <Tabs
@@ -45,7 +65,7 @@ export default function TabsLayout() {
               iconName="checkbox-outline"
               color={color}
               size={size}
-              badgeCount={4}
+              badgeCount={badgeCount}
             />
           ),
         }}

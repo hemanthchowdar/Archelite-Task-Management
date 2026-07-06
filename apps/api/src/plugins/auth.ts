@@ -32,6 +32,7 @@ export function defineAbilityFor(employee: Employee): AppAbility {
     can('create', 'Task');
     can('manage', 'Comment');
     can('manage', 'Attachment');
+    can('read', 'Employee'); // needed to pick an approver when requesting approval
   }
 
   return build();

@@ -81,6 +81,67 @@ async function main() {
     }
   })
 
+  // additional demo members
+  const hemanth = await prisma.employee.upsert({
+    where: { phone: '+919999999991' },
+    update: {},
+    create: {
+      name: 'Hemanth',
+      phone: '+919999999991',
+      email: 'hemanth@ctms.com',
+      employeeId: 'EMP003',
+      accessRole: 'member',
+      orgLevel: 3,
+      preferredLanguage: 'en',
+      status: 'active'
+    }
+  })
+
+  const keerthi = await prisma.employee.upsert({
+    where: { phone: '+919999999992' },
+    update: {},
+    create: {
+      name: 'Keerthi',
+      phone: '+919999999992',
+      email: 'keerthi@ctms.com',
+      employeeId: 'EMP004',
+      accessRole: 'member',
+      orgLevel: 3,
+      preferredLanguage: 'en',
+      status: 'active'
+    }
+  })
+
+  const yash = await prisma.employee.upsert({
+    where: { phone: '+919999999993' },
+    update: {},
+    create: {
+      name: 'Yash',
+      phone: '+919999999993',
+      email: 'yash@ctms.com',
+      employeeId: 'EMP005',
+      accessRole: 'member',
+      orgLevel: 3,
+      preferredLanguage: 'en',
+      status: 'active'
+    }
+  })
+
+  const lakshmi = await prisma.employee.upsert({
+    where: { phone: '+919999999994' },
+    update: {},
+    create: {
+      name: 'Lakshmi',
+      phone: '+919999999994',
+      email: 'lakshmi@ctms.com',
+      employeeId: 'EMP006',
+      accessRole: 'member',
+      orgLevel: 3,
+      preferredLanguage: 'en',
+      status: 'active'
+    }
+  })
+
   // one sample task
   const task = await prisma.task.create({
     data: {
@@ -102,7 +163,7 @@ async function main() {
 
   console.log('✅ Seeded:')
   console.log(`   ${categories.length} categories`)
-  console.log(`   2 employees (${superAdmin.name}, ${member.name})`)
+  console.log(`   6 employees (${superAdmin.name}, ${member.name}, ${hemanth.name}, ${keerthi.name}, ${yash.name}, ${lakshmi.name})`)
   console.log(`   1 task: "${task.title}"`)
 }
 

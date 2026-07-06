@@ -5,6 +5,7 @@ import { config } from './config'
 import prismaPlugin from './plugins/prisma'
 import corsPlugin from './plugins/cors'
 import authPlugin from './plugins/auth'
+import multipart from '@fastify/multipart'
 
 // domain routes
 import authRoutes from './routes/auth'
@@ -28,6 +29,11 @@ async function main() {
   await server.register(corsPlugin)
   await server.register(prismaPlugin)
   await server.register(authPlugin)
+  await server.register(multipart, {
+    limits: {
+      fileSize: 10 * 1024 * 1024, // 10MB
+    },
+  })
 
   // ── Root route (Welcome & API Info) ─────────────────
   server.get('/', async () => {

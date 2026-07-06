@@ -4,9 +4,9 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { Ionicons } from '@expo/vector-icons';
@@ -183,8 +183,9 @@ export default function TasksScreen() {
     refetch,
     isFetching,
   } = useQuery<Task[]>({
-    queryKey: ['tasks'],
+    queryKey: ['tasks', employee?.id],
     queryFn: () => apiFetch<Task[]>('/tasks'),
+    refetchInterval: 3000,
   });
 
   // ── Client-side filter logic ───────────────────────

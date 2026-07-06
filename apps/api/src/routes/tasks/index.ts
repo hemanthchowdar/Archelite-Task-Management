@@ -1,6 +1,20 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { TaskStatus, TaskPriority, AssignmentRole, ApprovalStatus } from '@ctms/db';
+import { createClient } from '@supabase/supabase-js';
+import fs from 'fs';
+import path from 'path';
+import { randomUUID } from 'crypto';
+import WebSocket from 'ws';
+import { config } from '../../config';
+
+if (typeof globalThis.WebSocket === 'undefined') {
+  (globalThis as any).WebSocket = WebSocket;
+}
+
+const supabaseUrl = config.SUPABASE_URL;
+const supabaseKey = config.SUPABASE_SERVICE_ROLE_KEY || config.SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Enforced state transition matrix
 const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
@@ -13,7 +27,66 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 
 const taskRoutes: FastifyPluginAsync = async (server) => {
 
-  // ─── POST /tasks (Create Task with Multi-Assignees) ───────────────
+  // ─── POST /tasks/attachments/upload ──────────────────────────────
+  server.post('/attachments/upload', async (request, reply) => {
+    if (!request.user) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+
+    const data = await request.file();
+    if (!data) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'No file uploaded' });
+    }
+
+    const uniqueId = randomUUID();
+    const extension = path.extname(data.filename);
+    const basename = path.basename(data.filename, extension);
+    const filename = `${uniqueId}-${basename}${extension}`;
+
+    try {
+      const fileBuffer = await data.toBuffer();
+      const { error } = await supabase.storage
+        .from('attachments')
+        .upload(filename, fileBuffer, {
+          contentType: data.mimetype,
+          upsert: true,
+        });
+
+      if (error) {
+        request.log.error(error, 'Supabase upload failed');
+        return reply.status(500).send({
+          error: 'Supabase Error',
+          message: error.message,
+        });
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from('attachments')
+        .getPublicUrl(filename);
+
+      if (!publicUrlData || !publicUrlData.publicUrl) {
+        return reply.status(500).send({
+          error: 'Internal Server Error',
+          message: 'Could not resolve public URL from Supabase Storage',
+        });
+      }
+
+      return reply.status(201).send({
+        fileUrl: publicUrlData.publicUrl,
+        fileName: data.filename,
+        fileType: data.mimetype,
+        sizeBytes: fileBuffer.length,
+      });
+    } catch (err: any) {
+      request.log.error(err, 'Supabase upload operation failed');
+      return reply.status(500).send({
+        error: 'Internal Server Error',
+        message: err.message || 'File upload failed',
+      });
+    }
+  });
+
+  // ─── POST /tasks (Create Task with Multi-Assignees and Attachments) ───────────────
   server.post('/', async (request, reply) => {
     const bodySchema = z.object({
       title: z.string().min(1, 'Title is required'),
@@ -23,6 +96,12 @@ const taskRoutes: FastifyPluginAsync = async (server) => {
       categoryId: z.string().optional().nullable(),
       projectId: z.string().optional().nullable(),
       assigneeIds: z.array(z.string()).optional().default([]),
+      attachments: z.array(z.object({
+        fileUrl: z.string(),
+        fileName: z.string(),
+        fileType: z.string(),
+        sizeBytes: z.number().int().min(0),
+      })).optional().default([]),
     });
 
     const parsed = bodySchema.safeParse(request.body);
@@ -33,7 +112,7 @@ const taskRoutes: FastifyPluginAsync = async (server) => {
       });
     }
 
-    const { title, description, priority, dueDate, categoryId, projectId, assigneeIds } = parsed.data;
+    const { title, description, priority, dueDate, categoryId, projectId, assigneeIds, attachments } = parsed.data;
     const actorId = request.user!.id;
 
     // Run creation inside a Prisma Transaction to ensure audit logs & assignments write atomic
@@ -84,6 +163,20 @@ const taskRoutes: FastifyPluginAsync = async (server) => {
         },
       });
 
+      // 4. Create Attachments
+      if (attachments && attachments.length > 0) {
+        await tx.attachment.createMany({
+          data: attachments.map(att => ({
+            taskId: newTask.id,
+            uploaderId: actorId,
+            fileUrl: att.fileUrl,
+            fileName: att.fileName,
+            fileType: att.fileType,
+            sizeBytes: att.sizeBytes,
+          })),
+        });
+      }
+
       return newTask;
     });
 
@@ -95,6 +188,7 @@ const taskRoutes: FastifyPluginAsync = async (server) => {
         category: true,
         project: true,
         createdBy: true,
+        attachments: true,
       },
     });
 
@@ -142,6 +236,33 @@ const taskRoutes: FastifyPluginAsync = async (server) => {
         category: true,
         project: true,
         createdBy: true,
+      },
+      orderBy: { lastActivityAt: 'desc' },
+    });
+
+    return tasks;
+  });
+
+  // ─── GET /tasks/my-approvals (My approval requests - pending & decided) ───
+  server.get('/my-approvals', async (request, reply) => {
+    const actor = request.user!;
+
+    const tasks = await server.prisma.task.findMany({
+      where: {
+        approvals: {
+          some: {
+            approverId: actor.id,
+          },
+        },
+      },
+      include: {
+        assignments: { include: { employee: true } },
+        category: true,
+        createdBy: true,
+        approvals: {
+          where: { approverId: actor.id },
+          include: { requestedBy: true, approver: true },
+        },
       },
       orderBy: { lastActivityAt: 'desc' },
     });
@@ -355,6 +476,64 @@ const taskRoutes: FastifyPluginAsync = async (server) => {
     });
 
     return updatedTask;
+  });
+
+  // ─── DELETE /tasks/:id (Delete Task) ───────────────────────────────
+  server.delete('/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const employee = request.user!;
+
+    const task = await server.prisma.task.findUnique({
+      where: { id },
+    });
+
+    if (!task) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Task not found' });
+    }
+
+    // Permission check: only super_admin, admin, or the task creator can delete
+    const isSuperAdmin = employee.accessRole === 'super_admin';
+    const isAdmin = employee.accessRole === 'admin';
+    const isCreator = task.createdById === employee.id;
+
+    if (!isSuperAdmin && !isAdmin && !isCreator) {
+      return reply.status(403).send({
+        error: 'Forbidden',
+        message: 'Only admins, super admins, or the task creator can delete this task',
+      });
+    }
+
+    await server.prisma.$transaction(async (tx) => {
+      // 1. Delete notifications
+      await tx.notification.deleteMany({ where: { taskId: id } });
+
+      // 2. Delete audit logs
+      await tx.auditLog.deleteMany({ where: { taskId: id } });
+
+      // 3. Delete approvals
+      await tx.approvalRequest.deleteMany({ where: { taskId: id } });
+
+      // 4. Delete attachments associated with comments or tasks
+      await tx.attachment.deleteMany({
+        where: {
+          OR: [
+            { taskId: id },
+            { comment: { taskId: id } },
+          ],
+        },
+      });
+
+      // 5. Delete comments
+      await tx.comment.deleteMany({ where: { taskId: id } });
+
+      // 6. Delete assignments
+      await tx.taskAssignment.deleteMany({ where: { taskId: id } });
+
+      // 7. Delete the task
+      await tx.task.delete({ where: { id } });
+    });
+
+    return { success: true, message: 'Task deleted successfully' };
   });
 
   // ─── POST /tasks/:id/assignees (Add Assignee) ──────────────────────
@@ -660,6 +839,129 @@ const taskRoutes: FastifyPluginAsync = async (server) => {
     });
 
     return decidedApproval;
+  });
+
+  // ─── POST /tasks/:id/comments (Add Comment) ──────────────────────────
+  server.post('/:id/comments', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const employee = request.user!;
+
+    const commentSchema = z.object({
+      body: z.string().min(1, 'Comment body is required'),
+      type: z.enum(['text', 'voice']).default('text'),
+      attachments: z.array(z.object({
+        fileUrl: z.string().url(),
+        fileType: z.string(),
+        fileName: z.string(),
+        sizeBytes: z.number().int().nonnegative(),
+      })).optional(),
+    });
+
+    const parsed = commentSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: 'Bad Request',
+        message: 'Invalid comment schema',
+        details: parsed.error.format(),
+      });
+    }
+
+    const { body, type, attachments } = parsed.data;
+
+    // Verify task existence & visibility
+    const task = await server.prisma.task.findUnique({
+      where: { id },
+      include: {
+        assignments: true,
+      },
+    });
+
+    if (!task) {
+      return reply.status(404).send({
+        error: 'Not Found',
+        message: 'Task not found',
+      });
+    }
+
+    // Visibility gate
+    if (employee.accessRole === 'member') {
+      const isCreator = task.createdById === employee.id;
+      const isAssignee = task.assignments.some(a => a.employeeId === employee.id);
+      if (!isCreator && !isAssignee) {
+        return reply.status(403).send({
+          error: 'Forbidden',
+          message: 'You do not have access to this task',
+        });
+      }
+    }
+
+    const newComment = await server.prisma.$transaction(async (tx) => {
+      // 1. Create comment
+      const comment = await tx.comment.create({
+        data: {
+          taskId: id,
+          authorId: employee.id,
+          body,
+          type,
+        },
+        include: {
+          author: true,
+          attachments: true,
+        },
+      });
+
+      // 2. Add attachments if any
+      if (attachments && attachments.length > 0) {
+        await tx.attachment.createMany({
+          data: attachments.map((a) => ({
+            taskId: id,
+            commentId: comment.id,
+            uploaderId: employee.id,
+            fileUrl: a.fileUrl,
+            fileType: a.fileType,
+            fileName: a.fileName,
+            sizeBytes: a.sizeBytes,
+          })),
+        });
+
+        // Write audit log with attachment count
+        await tx.auditLog.create({
+          data: {
+            taskId: id,
+            actorId: employee.id,
+            action: 'add_comment_with_attachments',
+            toValue: `${attachments.length} file(s) uploaded`,
+          },
+        });
+      } else {
+        // Write normal comment audit log
+        await tx.auditLog.create({
+          data: {
+            taskId: id,
+            actorId: employee.id,
+            action: 'add_comment',
+            toValue: body.length > 30 ? body.substring(0, 30) + '...' : body,
+          },
+        });
+      }
+
+      // 3. Update lastActivityAt on parent task
+      await tx.task.update({
+        where: { id },
+        data: { lastActivityAt: new Date() },
+      });
+
+      // 4. Return comment with attachments fully loaded
+      return await tx.comment.findUniqueOrThrow({
+        where: { id: comment.id },
+        include: {
+          author: true,
+          attachments: true,
+        },
+      });
+    });
+
+    return newComment;
   });
 };
 
