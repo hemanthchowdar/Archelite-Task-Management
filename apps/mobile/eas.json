@@ -11,6 +11,9 @@
       "distribution": "internal",
       "node": "18.19.0",
       "pnpm": "9.0.0",
+      "env": {
+        "EXPO_USE_PNPM": "1"
+      },
       "android": {
         "buildType": "apk"
       }
