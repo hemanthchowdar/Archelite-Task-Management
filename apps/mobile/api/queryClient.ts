@@ -19,7 +19,7 @@ const getApiBase = () => {
     const ip = hostUri.split(':')[0];
     return `http://${ip}:3001`;
   }
-  return 'http://localhost:3001';
+  return 'https://archelite-api.onrender.com';
 };
 
 const API_BASE = getApiBase();
