@@ -2,9 +2,13 @@
   "name": "@ctms/db",
   "version": "0.0.1",
   "private": true,
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prisma": "prisma"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
